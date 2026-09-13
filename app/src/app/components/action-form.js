@@ -25,12 +25,12 @@ export default function ActionForm({ action, submitLabel, pendingLabel = 'Saving
         <button type="submit" className={`btn ${variant}`} disabled={pending}>
           {pending ? pendingLabel : submitLabel}
         </button>
-        {state?.message ? (
-          <p role="status" className={`notice ${state.ok ? 'ok' : 'err'}`}>
-            {state.message}
-          </p>
-        ) : null}
       </div>
+      {state?.message ? (
+        <p role="status" className={`notice ${state.ok ? 'ok' : 'err'}`}>
+          {state.message}
+        </p>
+      ) : null}
     </form>
   );
 }

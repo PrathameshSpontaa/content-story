@@ -8,12 +8,12 @@ export default function SignUpPage() {
   return (
     <main className="authpage">
       <div className="authcopy">
-        <p className="eyebrow">Free trial · no card needed</p>
-        <h1>Start with {fmtNum(TRIAL.credits)} free credits.</h1>
+        <p className="kicker">Free trial · no card needed</p>
+        <h1>Your first stories in about a minute.</h1>
         <ul className="ticks">
-          <li>Every story in the shared AI &amp; tech feed</li>
-          <li>A watchlist of up to {TRIAL.maxSources} creators or communities</li>
-          <li>Enough credits for an on-demand story report</li>
+          <li>Pick creators, subreddits and brands to follow</li>
+          <li>Every story in this week’s AI and tech feed</li>
+          <li>{fmtNum(TRIAL.credits)} free credits, enough for a story report</li>
         </ul>
       </div>
       <SignUp />

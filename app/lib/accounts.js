@@ -11,7 +11,8 @@ const adminEmails = () =>
 
 const MEMBER = `
   select u.id as user_id, u.email, u.name, m.role,
-         w.id as workspace_id, w.name as workspace_name, w.gstin, w.billing_state, w.created_at as workspace_created_at
+         w.id as workspace_id, w.name as workspace_name, w.gstin, w.billing_state, w.created_at as workspace_created_at,
+         w.onboarded_at, w.use_case
     from users u
     join memberships m on m.user_id = u.id
     join workspaces w on w.id = m.workspace_id
@@ -22,7 +23,15 @@ const MEMBER = `
 function toSession(row) {
   return {
     user: { id: row.user_id, email: row.email, name: row.name },
-    workspace: { id: row.workspace_id, name: row.workspace_name, gstin: row.gstin, billingState: row.billing_state, createdAt: row.workspace_created_at },
+    workspace: {
+      id: row.workspace_id,
+      name: row.workspace_name,
+      gstin: row.gstin,
+      billingState: row.billing_state,
+      createdAt: row.workspace_created_at,
+      onboardedAt: row.onboarded_at,
+      useCase: row.use_case,
+    },
     role: row.role,
     isAdmin: adminEmails().includes(String(row.email).toLowerCase()),
   };
@@ -104,6 +113,10 @@ export async function listPlans() {
 export async function listPriceList() {
   const { rows } = await pool.query('select action, credits, unit from price_list order by credits desc');
   return Object.fromEntries(rows.map((r) => [r.action, r]));
+}
+
+export async function skipOnboarding(workspaceId) {
+  await pool.query('update workspaces set onboarded_at = coalesce(onboarded_at, now()) where id = $1', [workspaceId]);
 }
 
 export async function updateWorkspace(workspaceId, { name, gstin, billingState }) {

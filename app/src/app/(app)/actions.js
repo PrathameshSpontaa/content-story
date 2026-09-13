@@ -8,6 +8,6 @@ export async function toggleSaveAction(formData) {
   const session = await requireSession();
   const storyId = String(formData.get('storyId') ?? '');
   await toggleSaved(session.workspace.id, session.user.id, storyId);
-  revalidatePath('/feed');
+  revalidatePath('/stories');
   revalidatePath(`/stories/${storyId}`);
 }

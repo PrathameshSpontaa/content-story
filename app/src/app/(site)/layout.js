@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { isSignedIn } from '../../../lib/session.js';
+import Brand from '../components/brand-mark.js';
 import SiteFooter from '../components/site-footer.js';
 
 export default async function SiteLayout({ children }) {
@@ -7,15 +8,17 @@ export default async function SiteLayout({ children }) {
   return (
     <div className="site">
       <header className="sitebar">
-        <Link href="/" className="wordmark">
-          Content-Story
-        </Link>
+        <Brand href="/" />
         <nav className="sitenav" aria-label="Site">
-          <Link href="/#how">How it works</Link>
-          <Link href="/#pricing">Pricing</Link>
+          <Link href="/#how" className="hide-sm">
+            How it works
+          </Link>
+          <Link href="/#pricing" className="hide-sm">
+            Pricing
+          </Link>
           {signedIn ? (
-            <Link href="/feed" className="btn primary sm">
-              Open your feed
+            <Link href="/stories" className="btn primary sm">
+              Open your stories
             </Link>
           ) : (
             <>

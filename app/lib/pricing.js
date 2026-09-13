@@ -3,7 +3,7 @@
 export const PLATFORMS = ['x', 'youtube', 'linkedin', 'instagram', 'tiktok', 'reddit'];
 
 // Every new workspace starts here until it subscribes.
-export const TRIAL = { credits: 1000, maxSources: 3, maxKeywords: 1, seats: 1 };
+export const TRIAL = { credits: 1000, maxSources: 10, maxKeywords: 3, seats: 1 };
 
 export const REPORT_MAX_DAYS = 7;
 export const REPORT_LOOKBACK_DAYS = 30;

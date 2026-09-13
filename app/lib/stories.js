@@ -40,7 +40,7 @@ export function whyNotTop({ sources, creators, audience }) {
 
 // The shared feed, optionally narrowed to a workspace's watchlist or saved stories, a category,
 // a platform, or a search. `tracked` names the watchlist entries each story involves.
-export async function getFeed({ workspaceId = null, scope = 'all', category = '', platform = '', q = '' } = {}) {
+export async function getFeed({ workspaceId = null, scope = 'all', category = '', platform = '', q = '', followTargetId = '' } = {}) {
   const params = [workspaceId];
   const param = (value) => {
     params.push(value);
@@ -57,6 +57,9 @@ export async function getFeed({ workspaceId = null, scope = 'all', category = ''
   }
   if (scope === 'watchlist') where.push(`exists (select 1 from tracking_targets t where t.workspace_id = $1 and t.active and ${TARGET_MATCHES_STORY})`);
   if (scope === 'saved') where.push('exists (select 1 from saved_stories ss where ss.story_id = s.id and ss.workspace_id = $1)');
+  if (followTargetId && /^[0-9a-f-]{36}$/i.test(followTargetId)) {
+    where.push(`exists (select 1 from tracking_targets t where t.workspace_id = $1 and t.id = ${param(followTargetId)}::uuid and ${TARGET_MATCHES_STORY})`);
+  }
 
   const { rows } = await pool.query(
     `select s.id, s.category, s.heat, s.first_post_at, s.last_post_at,
@@ -68,6 +71,10 @@ export async function getFeed({ workspaceId = null, scope = 'all', category = ''
             (v.stats ->> 'sources')::int as sources,
             (v.stats ->> 'platforms')::int as platforms,
             ${AUDIENCE} as audience,
+            array(select distinct cr.name
+                    from story_posts sp join posts po on po.id = sp.post_id
+                    join creator_handles h on h.id = po.handle_id join creators cr on cr.id = h.creator_id
+                   where sp.story_id = s.id) as creator_names,
             array(select distinct coalesce(c.name, t.query)
                     from tracking_targets t left join creators c on c.id = t.creator_id
                    where t.workspace_id = $1::uuid and t.active and ${TARGET_MATCHES_STORY}) as tracked,
@@ -83,6 +90,21 @@ export async function getFeed({ workspaceId = null, scope = 'all', category = ''
 }
 
 export const getSharedFeed = () => getFeed();
+
+// Story counts for the tabs: everything this week, what involves who you follow, and saved.
+export async function getFeedCounts(workspaceId) {
+  const { rows } = await pool.query(
+    `select count(*)::int as total,
+            count(*) filter (where exists (select 1 from tracking_targets t where t.workspace_id = $1 and t.active and ${TARGET_MATCHES_STORY}))::int as for_you,
+            count(*) filter (where exists (select 1 from saved_stories ss where ss.story_id = s.id and ss.workspace_id = $1))::int as saved
+       from stories s
+       join feeds f on f.id = s.feed_id and f.workspace_id is null
+       ${LATEST_PASSED_VERSION}
+      where s.published_at is not null and s.status not in ('merged', 'rejected')`,
+    [workspaceId],
+  );
+  return rows[0];
+}
 
 export async function getCategories() {
   const { rows } = await pool.query(

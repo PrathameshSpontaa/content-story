@@ -1,10 +1,9 @@
 import { ClerkProvider } from '@clerk/nextjs';
-import { JetBrains_Mono, Newsreader, Schibsted_Grotesk } from 'next/font/google';
+import { Newsreader, Schibsted_Grotesk } from 'next/font/google';
 import './globals.css';
 
-const display = Schibsted_Grotesk({ subsets: ['latin'], weight: ['400', '600', '700', '800'], variable: '--font-display' });
+const sans = Schibsted_Grotesk({ subsets: ['latin'], weight: ['400', '500', '600', '700', '800'], variable: '--font-sans' });
 const serif = Newsreader({ subsets: ['latin'], weight: ['400', '500'], variable: '--font-serif' });
-const mono = JetBrains_Mono({ subsets: ['latin'], weight: ['400', '500', '600'], variable: '--font-mono' });
 
 export const metadata = {
   title: { default: 'Content-Story', template: '%s · Content-Story' },
@@ -13,19 +12,19 @@ export const metadata = {
 };
 
 const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
-const clerkAppearance = { variables: { colorPrimary: '#141b24', borderRadius: '6px' } };
+const clerkAppearance = { variables: { colorPrimary: '#0e1420', borderRadius: '8px', fontFamily: 'var(--font-sans), system-ui, sans-serif' } };
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en" className={`${display.variable} ${serif.variable} ${mono.variable}`}>
+    <html lang="en" className={`${sans.variable} ${serif.variable}`}>
       <body>
         {publishableKey ? (
           <ClerkProvider
             publishableKey={publishableKey}
             signInUrl="/sign-in"
             signUpUrl="/sign-up"
-            signInFallbackRedirectUrl="/feed"
-            signUpFallbackRedirectUrl="/feed"
+            signInFallbackRedirectUrl="/stories"
+            signUpFallbackRedirectUrl="/welcome"
             appearance={clerkAppearance}
           >
             {children}

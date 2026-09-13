@@ -1,11 +1,14 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { cache } from 'react';
-import { HEAT_HELP, PLATFORM_NAMES as P, dayRange, fmtNum, fmtTime, plural, stripCites } from '../../../../../lib/format.js';
+import { PLATFORM_NAMES as P, dayRange, fmtNum, fmtTime, plural, stripCites } from '../../../../../lib/format.js';
 import { requireSession } from '../../../../../lib/session.js';
 import { MIN_COMMENTS_FOR_PCT, getStory, getStoryContext } from '../../../../../lib/stories.js';
 import CopyButton from '../../../components/copy-button.js';
+import Heat from '../../../components/heat.js';
+import Icon from '../../../components/icons.js';
 import OpenSourcesOnCite from '../../../components/open-sources.js';
+import PlatformMark from '../../../components/platform-mark.js';
 import { toggleSaveAction } from '../../actions.js';
 
 export const dynamic = 'force-dynamic';
@@ -91,7 +94,10 @@ export default async function StoryPage({ params }) {
     return (
       <article className="pcard" key={pl.platform}>
         <header>
-          <b>{P[pl.platform] ?? pl.platform}</b>
+          <b>
+            <PlatformMark platform={pl.platform} size="md" />
+            {P[pl.platform] ?? pl.platform}
+          </b>
           <span className="muted">
             {plural(nums.posts, 'post')} · {plural(nums.commentsGrouped, 'comment')}
           </span>
@@ -287,28 +293,28 @@ export default async function StoryPage({ params }) {
   });
 
   return (
-    <main>
-      <p className="eyebrow" style={{ marginBottom: 12 }}>
-        <Link href="/feed">← This week’s stories</Link>
-      </p>
-      <article className="page">
+    <div className="page doc">
+      <Link href="/stories" className="backlink">
+        <Icon name="back" size={16} /> Stories
+      </Link>
+      <article className="storydoc">
         <header className="hero">
-          <p className="eyebrow">
-            <span className="mc">{narrative.main_character?.name}</span> · {story.category} · {dayRange(story.first_post_at, story.last_post_at)}
+          <p className="kicker">
+            <span className="mc">{narrative.main_character?.name}</span>
+            <span aria-hidden="true">·</span>
+            <span>{dayRange(story.first_post_at, story.last_post_at)}</span>
           </p>
           <h1>{headline}</h1>
           {edit?.dek ? <p className="dek">{edit.dek}</p> : null}
           <p className="cov">
-            {coverage} ·{' '}
-            <span className="heat" title={HEAT_HELP}>
-              heat {story.heat}
-            </span>
+            <span>{coverage}</span>
+            <Heat value={story.heat} />
           </p>
           {edit?.platform_strip?.length ? (
-            <ul className="strip">
+            <ul className="takes" aria-label="What each platform is saying">
               {edit.platform_strip.map((s) => (
                 <li key={s.platform}>
-                  <b>{P[s.platform] ?? s.platform}</b>
+                  <PlatformMark platform={s.platform} />
                   <span>{s.gist}</span>
                 </li>
               ))}
@@ -318,17 +324,18 @@ export default async function StoryPage({ params }) {
             <form action={toggleSaveAction}>
               <input type="hidden" name="storyId" value={story.id} />
               <button type="submit" className={`btn sm ${context.saved ? 'primary' : 'ghost'}`} aria-pressed={context.saved}>
-                {context.saved ? 'Saved' : 'Save story'}
+                <Icon name="bookmark" size={15} filled={context.saved} />
+                {context.saved ? 'Saved' : 'Save'}
               </button>
             </form>
             <CopyButton label="Copy link" doneLabel="Link copied" />
             <CopyButton text={summaryText} label="Copy summary" doneLabel="Summary copied" />
-            {context.tracked.length ? <span className="tracked">On your watchlist: {context.tracked.join(', ')}</span> : null}
+            {context.tracked.length ? <span className="tracked">You follow {context.tracked.join(', ')}</span> : null}
           </div>
         </header>
 
-        <div className="body">
-          <div className="main">
+        <div className="docbody">
+          <div className="doc-main">
             <h2 className="label">The story</h2>
             <div className="character">
               <span className="role">Main character</span>
@@ -351,7 +358,7 @@ export default async function StoryPage({ params }) {
               </>
             ) : null}
           </div>
-          <aside className="side">
+          <aside className="doc-aside">
             <h2 className="label">Where audiences stand</h2>
             {story.audience ? (
               <>
@@ -405,6 +412,6 @@ export default async function StoryPage({ params }) {
         </footer>
       </article>
       <OpenSourcesOnCite />
-    </main>
+    </div>
   );
 }

@@ -18,7 +18,7 @@ export default async function AdminPage() {
   const published = stories.filter((s) => s.published_at);
 
   return (
-    <main className="apppage">
+    <div className="page wide">
       <header className="pagehead">
         <h1>Admin</h1>
         <p className="dek">Report requests, the story review queue, and every workspace. Only emails in ADMIN_EMAILS see this page.</p>
@@ -217,6 +217,6 @@ export default async function AdminPage() {
           </tbody>
         </table>
       </div>
-    </main>
+    </div>
   );
 }

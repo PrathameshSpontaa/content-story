@@ -114,9 +114,130 @@ async function assertRoom(client, workspaceId, kind, plan) {
   );
   const limit = isKeyword ? plan.maxKeywords : plan.maxSources;
   if (rows[0].n >= limit) {
-    const what = isKeyword ? `${limit === 1 ? 'brand or keyword' : 'brands or keywords'}` : `${limit === 1 ? 'creator or community' : 'creators and communities'}`;
-    throw new WatchlistError(`${plan.name} includes ${limit} active ${what}. Pause or remove one, or move to a bigger plan.`);
+    const what = isKeyword ? (limit === 1 ? 'brand or topic' : 'brands and topics') : limit === 1 ? 'creator or subreddit' : 'creators and subreddits';
+    throw new WatchlistError(`${plan.name} includes ${limit} ${what}. Unfollow one to add another.`);
   }
+}
+
+// Following again after unfollowing (or an automatic pause) reactivates the same row.
+const FOLLOW_CREATOR = `
+  insert into tracking_targets (workspace_id, kind, creator_id, platforms)
+  select $1, 'creator', c.id, array_agg(distinct h.platform)
+    from creators c join creator_handles h on h.creator_id = c.id
+   where c.id = $2
+   group by c.id
+  on conflict (workspace_id, creator_id) where kind = 'creator'
+  do update set active = true, paused_reason = null where not tracking_targets.active`;
+
+const FOLLOW_QUERY = `
+  insert into tracking_targets (workspace_id, kind, query, platforms) values ($1, $2, $3, $4::platform[])
+  on conflict (workspace_id, kind, lower(query)) where kind <> 'creator'
+  do update set active = true, paused_reason = null where not tracking_targets.active`;
+
+const UUID = /^[0-9a-f-]{36}$/i;
+const cleanKeyword = (value) => String(value ?? '').trim().replace(/\s+/g, ' ');
+
+export async function followCreator(workspaceId, creatorId) {
+  if (!UUID.test(String(creatorId))) throw new WatchlistError('Choose a creator from the list.');
+  const plan = await getPlanState(workspaceId);
+  return tx(async (client) => {
+    await client.query('select 1 from workspaces where id = $1 for update', [workspaceId]);
+    await assertRoom(client, workspaceId, 'creator', plan);
+    const { rowCount } = await client.query(FOLLOW_CREATOR, [workspaceId, creatorId]);
+    return rowCount === 1;
+  });
+}
+
+// Which platform a pasted profile link belongs to. Bare handles return null.
+export function detectPlatform(raw) {
+  const path = String(raw ?? '').trim().replace(/^https?:\/\//i, '').replace(/^(www\.|m\.|mobile\.|old\.)/i, '').toLowerCase();
+  if (/^(x|twitter)\.com\//.test(path)) return 'x';
+  if (/^(youtube\.com|youtu\.be)\//.test(path)) return 'youtube';
+  if (/^linkedin\.com\//.test(path)) return 'linkedin';
+  if (/^instagram\.com\//.test(path)) return 'instagram';
+  if (/^tiktok\.com\//.test(path)) return 'tiktok';
+  if (/^reddit\.com\/r\//.test(path) || /^\/?r\/[a-z0-9_]+\/?$/.test(path)) return 'reddit';
+  return null;
+}
+
+// One box for anyone we don't cover yet: a profile link, or a handle plus its platform.
+export async function addByLink(workspaceId, { link, platform, name }) {
+  const input = String(link ?? '').trim();
+  if (!input) throw new WatchlistError('Paste a profile link or a handle.');
+  const detected = detectPlatform(input) ?? (PLATFORMS.includes(platform) ? platform : null);
+  if (!detected) throw new WatchlistError('We couldn’t tell which platform that is. Paste the full profile link, or choose the platform.');
+  if (detected === 'reddit') return { kind: 'community', name: (await addTopic(workspaceId, { kind: 'community', query: input })).query };
+  const { creatorName, matchedExisting } = await addCreator(workspaceId, { name, handles: { [detected]: input } });
+  return { kind: 'creator', name: creatorName, matchedExisting };
+}
+
+// First-run picks, saved in one go. Picks past the plan's limits are left out.
+export async function completeOnboarding(workspaceId, { useCase, creatorIds, communities, keywords }) {
+  const plan = await getPlanState(workspaceId);
+  const ids = [...new Set((creatorIds ?? []).map(String).filter((id) => UUID.test(id)))];
+  const subs = [
+    ...new Set(
+      (communities ?? [])
+        .map((c) => {
+          try {
+            return parseCommunity(c);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean),
+    ),
+  ];
+  const words = [...new Map((keywords ?? []).map(cleanKeyword).filter((k) => k.length >= 2 && k.length <= 60).map((k) => [k.toLowerCase(), k])).values()];
+  const use = ['brand', 'agency', 'media', 'exploring'].includes(useCase) ? useCase : null;
+
+  return tx(async (client) => {
+    await client.query('select 1 from workspaces where id = $1 for update', [workspaceId]);
+    const { rows } = await client.query(
+      `select count(*) filter (where kind <> 'keyword')::int as sources, count(*) filter (where kind = 'keyword')::int as keywords
+         from tracking_targets where workspace_id = $1 and active`,
+      [workspaceId],
+    );
+    let sourceRoom = plan.maxSources - rows[0].sources;
+    let keywordRoom = plan.maxKeywords - rows[0].keywords;
+    const added = { creators: 0, communities: 0, keywords: 0 };
+
+    for (const id of ids) {
+      if (sourceRoom <= 0) break;
+      if ((await client.query(FOLLOW_CREATOR, [workspaceId, id])).rowCount) {
+        sourceRoom -= 1;
+        added.creators += 1;
+      }
+    }
+    for (const sub of subs) {
+      if (sourceRoom <= 0) break;
+      if ((await client.query(FOLLOW_QUERY, [workspaceId, 'community', sub, ['reddit']])).rowCount) {
+        sourceRoom -= 1;
+        added.communities += 1;
+      }
+    }
+    for (const word of words) {
+      if (keywordRoom <= 0) break;
+      if ((await client.query(FOLLOW_QUERY, [workspaceId, 'keyword', word, PLATFORMS])).rowCount) {
+        keywordRoom -= 1;
+        added.keywords += 1;
+      }
+    }
+    await client.query('update workspaces set onboarded_at = coalesce(onboarded_at, now()), use_case = coalesce($2, use_case) where id = $1', [workspaceId, use]);
+    return added;
+  });
+}
+
+// The short list for the sidebar and the stories filter.
+export async function listFollowing(workspaceId) {
+  const { rows } = await pool.query(
+    `select t.id, t.kind, coalesce(c.name, t.query) as name
+       from tracking_targets t left join creators c on c.id = t.creator_id
+      where t.workspace_id = $1 and t.active
+      order by case t.kind when 'creator' then 0 when 'community' then 1 else 2 end, lower(coalesce(c.name, t.query))`,
+    [workspaceId],
+  );
+  return rows;
 }
 
 export async function addCreator(workspaceId, { name, handles }) {
@@ -137,8 +258,8 @@ export async function addCreator(workspaceId, { name, handles }) {
     );
     let creatorId = existing.rows[0]?.creator_id;
     if (!creatorId) {
-      if (!cleanName) throw new WatchlistError('Add the creator’s name.');
-      creatorId = (await client.query('insert into creators (name) values ($1) returning id', [cleanName])).rows[0].id;
+      const fallbackName = parsed[0][1].handle.replace(/^@|^company\//, '');
+      creatorId = (await client.query('insert into creators (name) values ($1) returning id', [cleanName || fallbackName])).rows[0].id;
     }
     for (const [platform, h] of parsed) {
       await client.query(
@@ -147,14 +268,9 @@ export async function addCreator(workspaceId, { name, handles }) {
         [creatorId, platform, h.handle, h.url],
       );
     }
-    const inserted = await client.query(
-      `insert into tracking_targets (workspace_id, kind, creator_id, platforms)
-       select $1, 'creator', $2, array_agg(distinct platform) from creator_handles where creator_id = $2
-       on conflict (workspace_id, creator_id) where kind = 'creator' do nothing`,
-      [workspaceId, creatorId],
-    );
+    const inserted = await client.query(FOLLOW_CREATOR, [workspaceId, creatorId]);
     const { name: creatorName } = (await client.query('select name from creators where id = $1', [creatorId])).rows[0];
-    if (!inserted.rowCount) throw new WatchlistError(`${creatorName} is already on your watchlist.`);
+    if (!inserted.rowCount) throw new WatchlistError(`You already follow ${creatorName}.`);
     return { creatorName, matchedExisting: Boolean(existing.rows[0]) };
   });
 }
@@ -166,9 +282,9 @@ export async function addTopic(workspaceId, { kind, query, platforms }) {
     cleanQuery = parseCommunity(query);
     cleanPlatforms = ['reddit'];
   } else if (kind === 'keyword') {
-    cleanQuery = String(query ?? '').trim().replace(/\s+/g, ' ');
+    cleanQuery = cleanKeyword(query);
     if (cleanQuery.length < 2 || cleanQuery.length > 60) throw new WatchlistError('A brand or keyword needs 2 to 60 characters.');
-    cleanPlatforms = PLATFORMS.filter((p) => (platforms ?? []).includes(p));
+    cleanPlatforms = PLATFORMS.filter((p) => (platforms ?? PLATFORMS).includes(p));
     if (!cleanPlatforms.length) throw new WatchlistError('Pick at least one platform to search.');
   } else {
     throw new WatchlistError('Choose what to track.');
@@ -178,12 +294,8 @@ export async function addTopic(workspaceId, { kind, query, platforms }) {
   return tx(async (client) => {
     await client.query('select 1 from workspaces where id = $1 for update', [workspaceId]);
     await assertRoom(client, workspaceId, kind, plan);
-    const inserted = await client.query(
-      `insert into tracking_targets (workspace_id, kind, query, platforms) values ($1, $2, $3, $4::platform[])
-       on conflict (workspace_id, kind, lower(query)) where kind <> 'creator' do nothing`,
-      [workspaceId, kind, cleanQuery, cleanPlatforms],
-    );
-    if (!inserted.rowCount) throw new WatchlistError(`${cleanQuery} is already on your watchlist.`);
+    const inserted = await client.query(FOLLOW_QUERY, [workspaceId, kind, cleanQuery, cleanPlatforms]);
+    if (!inserted.rowCount) throw new WatchlistError(`You already follow ${cleanQuery}.`);
     return { query: cleanQuery };
   });
 }
