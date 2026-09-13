@@ -1,0 +1,198 @@
+{
+  "niche": "AI & tech",
+  "window_days": 7,
+  "generated_on": "2026-09-13",
+  "creators": [
+    {
+      "id": "matt_wolfe",
+      "name": "Matt Wolfe",
+      "why": "Weekly AI news roundups plus daily shorts and posts on every platform; reacted to GPT-6 Astra (Sep 3) and posted AGI commentary (Sep 8).",
+      "handles": {
+        "x": { "handle": "mreflow", "url": "https://x.com/mreflow" },
+        "youtube": { "handle": "@mreflow", "url": "https://www.youtube.com/@mreflow" },
+        "linkedin": { "url": "https://www.linkedin.com/in/matt-wolfe-30841712/" },
+        "instagram": { "handle": "mr.eflow", "url": "https://www.instagram.com/mr.eflow/" },
+        "tiktok": { "handle": "mattrwolfe", "url": "https://www.tiktok.com/@mattrwolfe" }
+      },
+      "evidence": {
+        "x": "Linked from his official site mattwolfe.com. Posts dated 2026-09-03 (GPT-6 Astra early access) and 2026-09-08 (dates decoded from post IDs).",
+        "youtube": "Linked from mattwolfe.com, which showed the latest video as '2 days ago' when fetched.",
+        "linkedin": "Linked from mattwolfe.com; profile title 'Matt Wolfe - Future Tools'.",
+        "instagram": "Linked from mattwolfe.com (instagram.com/mr.eflow).",
+        "tiktok": "Linked from mattwolfe.com (tiktok.com/@mattrwolfe)."
+      }
+    },
+    {
+      "id": "matthew_berman",
+      "name": "Matthew Berman",
+      "why": "Forward Future AI news channel that reacts to model launches within hours; active on X on 2026-09-09.",
+      "handles": {
+        "x": { "handle": "MatthewBerman", "url": "https://x.com/MatthewBerman" },
+        "youtube": { "handle": "@matthew_berman", "url": "https://www.youtube.com/@matthew_berman" },
+        "linkedin": { "url": "https://www.linkedin.com/in/matthewberman/" },
+        "instagram": { "handle": "matthewberman_ai", "url": "https://www.instagram.com/matthewberman_ai/" },
+        "tiktok": { "handle": "matthewberman_ai", "url": "https://www.tiktok.com/@matthewberman_ai" }
+      },
+      "evidence": {
+        "x": "Listed on his official Passionfroot media kit (passionfroot.me/matthew-berman). Post dated 2026-09-09 (decoded from post ID).",
+        "youtube": "Listed on the Passionfroot media kit as @matthew_berman (633K subscribers).",
+        "linkedin": "Listed on the Passionfroot media kit (/in/matthewberman/); profile title 'Matthew Berman - Forward Future'.",
+        "instagram": "Name matches and bio says 'All in on AI', building @forward_future_ (his company). Handle matches his TikTok.",
+        "tiktok": "Display name 'matthewberman'; per search results the bio points back to his YouTube. Handle matches his Instagram."
+      }
+    },
+    {
+      "id": "bilawal_sidhu",
+      "name": "Bilawal Sidhu",
+      "why": "Ex-Google XR PM and TED AI host; posts about AI, 3D and world-model news; huge TikTok reach; X posts on 08-24, 08-28 and 09-01.",
+      "handles": {
+        "x": { "handle": "bilawalsidhu", "url": "https://x.com/bilawalsidhu" },
+        "youtube": { "handle": "@bilawalsidhu", "url": "https://www.youtube.com/@bilawalsidhu" },
+        "linkedin": { "url": "https://www.linkedin.com/in/bilawalsidhu/" },
+        "instagram": { "handle": "bilawal.ai", "url": "https://www.instagram.com/bilawal.ai/" },
+        "tiktok": { "handle": "billyfx", "url": "https://www.tiktok.com/@billyfx" }
+      },
+      "evidence": {
+        "x": "Linked from his official site bilawal.ai. Posts dated 2026-08-24, 2026-08-28 and 2026-09-01 (decoded from post IDs), including a 3D scan of the Amazon Prime Air crash site built from NTSB footage.",
+        "youtube": "Linked from bilawal.ai as his main channel.",
+        "linkedin": "Linked from bilawal.ai; profile title says Creator (2.1M+), TED Curator, Ex-Google XR.",
+        "instagram": "Linked from bilawal.ai (instagram.com/bilawal.ai).",
+        "tiktok": "Linked from bilawal.ai (tiktok.com/@billyfx, 990K+); his Beacons hub is also beacons.ai/billyfx."
+      }
+    },
+    {
+      "id": "allie_k_miller",
+      "name": "Allie K. Miller",
+      "why": "One of the most-followed AI business voices on LinkedIn; posts fast takes on launches (early-access GPT-6 Astra post on 09-03; LinkedIn post on 08-31).",
+      "handles": {
+        "x": { "handle": "alliekmiller", "url": "https://x.com/alliekmiller" },
+        "youtube": { "handle": "@AKMofficial", "url": "https://www.youtube.com/@AKMofficial" },
+        "linkedin": { "url": "https://www.linkedin.com/in/alliekmiller/" },
+        "instagram": { "handle": "alliekmiller", "url": "https://www.instagram.com/alliekmiller/" },
+        "tiktok": { "handle": "alliekmiller", "url": "https://www.tiktok.com/@alliekmiller" }
+      },
+      "evidence": {
+        "x": "Linked from her official site alliekmiller.com. GPT-6 Astra post dated 2026-09-03 (decoded from post ID).",
+        "youtube": "Linked from alliekmiller.com (youtube.com/@AKMofficial).",
+        "linkedin": "Linked from alliekmiller.com. Posts dated 2026-08-18 and 2026-08-31 (decoded from post IDs).",
+        "instagram": "Linked from alliekmiller.com; her LinkedIn headline also names @alliekmiller on Instagram, X and TikTok.",
+        "tiktok": "Linked from alliekmiller.com; also named in her LinkedIn headline."
+      }
+    },
+    {
+      "id": "nate_b_jones",
+      "name": "Nate B. Jones",
+      "why": "'AI News & Strategy Daily': daily takes on AI events for execs and builders; strong on TikTok and LinkedIn; posted Sep 7, 10 and 11.",
+      "handles": {
+        "youtube": { "handle": "@NateBJones", "url": "https://www.youtube.com/@NateBJones" },
+        "linkedin": { "url": "https://www.linkedin.com/in/natebjones/" },
+        "tiktok": { "handle": "nate.b.jones", "url": "https://www.tiktok.com/@nate.b.jones" }
+      },
+      "evidence": {
+        "youtube": "Linked from his official site natebjones.com (321K). Site showed a video dated 2026-09-11 and newsletter posts dated 09-07, 09-10 and 09-11.",
+        "linkedin": "Linked from natebjones.com; profile headline 'AI News & Strategy Daily'.",
+        "tiktok": "Linked from natebjones.com (tiktok.com/@nate.b.jones, 488K)."
+      }
+    },
+    {
+      "id": "marques_brownlee",
+      "name": "Marques Brownlee (MKBHD)",
+      "why": "Top consumer-tech reactor; this week he posted iPhone 18 Pro / iPhone Duo coverage after Apple's Sep 9 event.",
+      "handles": {
+        "x": { "handle": "MKBHD", "url": "https://x.com/MKBHD" },
+        "youtube": { "handle": "@mkbhd", "url": "https://www.youtube.com/channel/UCBJycsmduvYEL83R_U4JriQ" },
+        "instagram": { "handle": "mkbhd", "url": "https://www.instagram.com/mkbhd/" },
+        "tiktok": { "handle": "mkbhd", "url": "https://www.tiktok.com/@mkbhd" }
+      },
+      "evidence": {
+        "x": "Linked from his official site mkbhd.com.",
+        "youtube": "Linked from mkbhd.com (channel UCBJycsmduvYEL83R_U4JriQ). The site's recent videos include 'iPhone 18 Pro/Duo Impressions' and 'iPhone Duo is here'; the Apple event was 2026-09-09.",
+        "instagram": "Linked from mkbhd.com (instagram.com/MKBHD).",
+        "tiktok": "Profile named 'Marques Brownlee (@mkbhd)', 2.3M followers, bio 'Welcome to techtok'. He shared his own TikTok from @MKBHD on X, and the Hollywood Reporter covered his TikTok presence."
+      }
+    },
+    {
+      "id": "mrwhosetheboss",
+      "name": "Arun Maini (Mrwhosetheboss)",
+      "why": "Huge tech news and launch channel with high short-form engagement; went hands-on with iPhone Duo / 18 Pro this week, likely to overlap with MKBHD.",
+      "handles": {
+        "x": { "handle": "Mrwhosetheboss", "url": "https://x.com/Mrwhosetheboss" },
+        "youtube": { "handle": "@Mrwhosetheboss", "url": "https://www.youtube.com/@Mrwhosetheboss" },
+        "instagram": { "handle": "mrwhosetheboss", "url": "https://www.instagram.com/mrwhosetheboss/" },
+        "tiktok": { "handle": "mrwhosetheboss", "url": "https://www.tiktok.com/@mrwhosetheboss" }
+      },
+      "evidence": {
+        "x": "Linked from his official site mrwhosetheboss.com.",
+        "youtube": "Linked from mrwhosetheboss.com. Search showed iPhone Duo / 18 Pro hands-on videos posted 3-4 days ago (after the 2026-09-09 Apple event).",
+        "instagram": "Linked from mrwhosetheboss.com; Wikipedia also cites his Instagram posts from Apr and Aug 2026.",
+        "tiktok": "Profile named 'Arun Maini (@mrwhosetheboss)', 2.5M followers. Handle matches his site-linked X and Instagram, and third-party creator stats tie the @mrwhosetheboss TikTok to him."
+      }
+    },
+    {
+      "id": "varun_mayya",
+      "name": "Varun Mayya",
+      "why": "Bengaluru-based founder-creator (Aeos, YAAS) posting AI news reels and videos for Indian audiences; latest upload around Sep 5.",
+      "handles": {
+        "x": { "handle": "waitin4agi_", "url": "https://x.com/waitin4agi_" },
+        "youtube": { "handle": "@VarunMayya", "url": "https://www.youtube.com/@VarunMayya" },
+        "linkedin": { "url": "https://www.linkedin.com/in/varunmayya/" },
+        "instagram": { "handle": "thevarunmayya", "url": "https://www.instagram.com/thevarunmayya/" }
+      },
+      "evidence": {
+        "x": "Display name 'Varun Mayya'. Posts describe running Aeos Labs and YAAS, matching his Instagram bio; one post says he posts short-form on YT, Instagram and LinkedIn. CreatorDB also lists @waitin4agi_ on his profile. Latest post found: 2026-07-02.",
+        "youtube": "Linked from his company's YAAS! Media linktree (linktr.ee/YAASmedia). CreatorDB (updated 2026-09-07) shows the latest upload '2 days ago'.",
+        "linkedin": "Profile 'Varun Mayya - Aeos Group', Bengaluru. Name and company match his Instagram bio and X posts.",
+        "instagram": "Linked from the YAAS! Media linktree; bio lists founder of @yaas.media, @aeosgroup, @aeos.labs."
+      }
+    },
+    {
+      "id": "kyle_balmer",
+      "name": "Kyle Balmer",
+      "why": "'AI with Kyle': daily AI news explainers across TikTok, Reels and Shorts; covered Fable 5.1 (Sep 2) and GPT-6 Astra (Sep 4 onward); episode up ~14 hours before the podcast page was fetched.",
+      "handles": {
+        "x": { "handle": "iamkylebalmer", "url": "https://x.com/iamkylebalmer" },
+        "youtube": { "handle": "@iamkylebalmer", "url": "https://www.youtube.com/@iamkylebalmer" },
+        "linkedin": { "url": "https://www.linkedin.com/in/kylebalmer/" },
+        "instagram": { "handle": "iamkylebalmer", "url": "https://www.instagram.com/iamkylebalmer/" },
+        "tiktok": { "handle": "iamkylebalmer", "url": "https://www.tiktok.com/@iamkylebalmer" }
+      },
+      "evidence": {
+        "x": "His official linktree is titled 'Kyle Balmer Official: TikTok, X'. Same handle as all his site-linked profiles; display name 'Kyle Balmer' and posts push AI news. Latest dated post found was 2025-10; his activity overall is confirmed via the podcast.",
+        "youtube": "Linked from kylebalmer.com/about and his Passionfroot kit (78K). The AI with Kyle podcast (same content) has episodes dated 2026-08-31, 09-02, 09-04 and later.",
+        "linkedin": "Linked from kylebalmer.com/about and Passionfroot; profile 'Kyle Balmer - AI with Kyle'.",
+        "instagram": "Linked from kylebalmer.com/about and Passionfroot (38K).",
+        "tiktok": "Linked from kylebalmer.com/about and Passionfroot (172K)."
+      }
+    },
+    {
+      "id": "ruben_hassid",
+      "name": "Ruben Hassid",
+      "why": "LinkedIn-first AI voice ('How to AI', ~940K Substack) who turns launches into guides and reactions; posted about GPT-6 Astra on Sep 3 and Sep 8.",
+      "handles": {
+        "x": { "handle": "rubenhassid", "url": "https://x.com/rubenhassid" },
+        "linkedin": { "url": "https://www.linkedin.com/in/ruben-hassid/" },
+        "instagram": { "handle": "rubenhassid", "url": "https://www.instagram.com/rubenhassid/" }
+      },
+      "evidence": {
+        "x": "Display name 'Ruben Hassid' with a verification check; posts are How-to-AI style guides. Posts dated 2026-08-23, 2026-09-03 and 2026-09-08 ('How to actually use (the new) ChatGPT-Astra-6'), decoded from post IDs.",
+        "linkedin": "Profile 'Ruben Hassid - Substack' (his How to AI newsletter is on Substack); third-party sources cite 500K+ LinkedIn followers.",
+        "instagram": "Name matches and the bio sends followers to subscribe to his newsletter. A reel on the account says 'If you don't follow Ruben Hassid on Substack / LinkedIn...'."
+      }
+    }
+  ],
+  "subreddits": [
+    { "name": "singularity", "url": "https://www.reddit.com/r/singularity/" },
+    { "name": "OpenAI", "url": "https://www.reddit.com/r/OpenAI/" },
+    { "name": "LocalLLaMA", "url": "https://www.reddit.com/r/LocalLLaMA/" }
+  ],
+  "unverified": [
+    { "creator": "Rowan Cheung", "platform": "all (x, youtube, linkedin, instagram, tiktok)", "candidate": "x.com/rowancheung, youtube.com/@rowanch, linkedin.com/in/rowancheung, instagram.com/rowancheung, tiktok.com/@rowancheung", "reason": "Dropped from the list. All five handles are linked from rowancheung.com, but his latest dated personal post found was 2026-06-09. His newsletter The Rundown covered Fable 5.1 and Astra in September, but his own activity in the last 14 days could not be confirmed." },
+    { "creator": "Nate B. Jones", "platform": "instagram", "candidate": "https://www.instagram.com/nate.b.jones/", "reason": "His linktree has an Instagram button but the handle isn't visible. Name and bio are consistent, but the account has only 4 posts, so it is effectively inactive." },
+    { "creator": "Nate B. Jones", "platform": "x", "candidate": "https://x.com/natebjones", "reason": "Not linked from natebjones.com or his linktree; display name is only 'Nate'." },
+    { "creator": "Arun Maini (Mrwhosetheboss)", "platform": "linkedin", "candidate": "https://www.linkedin.com/in/mainiarun/", "reason": "Profile title 'Arun Maini - Mrwhosetheboss', but it is not linked from mrwhosetheboss.com and shows no posting activity." },
+    { "creator": "Varun Mayya", "platform": "x", "candidate": "https://x.com/Varunmayya", "reason": "Secondary account (joined Oct 2023). His primary, clearly tied account is @waitin4agi_, which is used instead." },
+    { "creator": "Ruben Hassid", "platform": "youtube", "candidate": "https://www.youtube.com/@rubenhassid", "reason": "No page of his links to this channel, and no recent uploads were confirmed." },
+    { "creator": "Ruben Hassid", "platform": "tiktok", "candidate": "https://www.tiktok.com/@rubenhassid.ai", "reason": "Name matches but only ~3.3K followers, and no page of his links to it." },
+    { "creator": "Ruben Hassid", "platform": "x", "candidate": "https://x.com/RubenHssd", "reason": "Named in one third-party summary; the active account with September 2026 posts is @rubenhassid." }
+  ]
+}

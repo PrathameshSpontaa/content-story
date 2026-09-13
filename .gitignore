@@ -1,0 +1,12 @@
+.env
+.env.local
+dryrun/.env
+dryrun/.env.local
+node_modules/
+app/.next/
+
+# Scraped posts, comments and generated pages stay out of the repository.
+dryrun/data/
+dryrun/data-gemini/
+dryrun/out/
+dryrun/out-gemini/

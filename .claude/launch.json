@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-app",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "D:/Projects/Codeamesh/POC/Content-Story/app"],
+      "port": 3000
+    },
+    {
+      "name": "story-pages",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["D:/Projects/Codeamesh/POC/Content-Story/dryrun/scripts/serve.mjs"],
+      "port": 5178
+    }
+  ]
+}

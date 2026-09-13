@@ -1,0 +1,34 @@
+{
+  "name": "content-story-app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "migrate": "node scripts/migrate.js",
+    "test:billing": "node scripts/test-billing.js",
+    "import:dryrun": "node scripts/import-dryrun.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@clerk/nextjs": "^7.9.2",
+    "drizzle-orm": "^0.45.2",
+    "next": "^16.3.5",
+    "pg": "^8.23.0",
+    "pg-boss": "^12.31.0",
+    "razorpay": "^2.9.8",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zod": "^4.6.4"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10"
+  }
+}
