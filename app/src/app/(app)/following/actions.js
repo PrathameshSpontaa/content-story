@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { requireSession } from '../../../../lib/session.js';
-import { WatchlistError, addByLink, addTopic, followCreator, removeTarget } from '../../../../lib/watchlist.js';
+import { WatchlistError, addTopic, followCreator, removeTarget } from '../../../../lib/watchlist.js';
 
 const UUID = /^[0-9a-f-]{36}$/i;
 
@@ -42,23 +42,6 @@ export async function unfollowAction(formData) {
   const id = String(formData.get('id') ?? '');
   if (UUID.test(id)) await removeTarget(session.workspace.id, id);
   refresh();
-}
-
-export async function addByLinkAction(_previous, formData) {
-  const session = await requireSession();
-  try {
-    const res = await addByLink(session.workspace.id, { link: formData.get('link'), platform: formData.get('platform'), name: formData.get('name') });
-    refresh();
-    const message =
-      res.kind === 'community'
-        ? `Following ${res.name}.`
-        : res.matchedExisting
-          ? `Following ${res.name}. We already collect them, so their stories are in For you.`
-          : `Following ${res.name}. Their posts are collected once daily collection is on.`;
-    return { ok: true, message };
-  } catch (err) {
-    return failure(err);
-  }
 }
 
 export async function addTopicAction(_previous, formData) {

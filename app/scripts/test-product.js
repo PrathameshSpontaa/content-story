@@ -11,18 +11,21 @@ import { TRIAL } from '../lib/pricing.js';
 import { ReportError, cancelReport, listReports, requestReport, shiftDate, todayIST, updateReport } from '../lib/reports.js';
 import { getFeed, getFeedCounts, getStoryContext, toggleSaved } from '../lib/stories.js';
 import {
+  ExistingCreatorError,
   WatchlistError,
-  addByLink,
-  addCreator,
   addTopic,
   completeOnboarding,
+  createCreator,
   detectPlatform,
   followCreator,
   listFollowing,
   listTargets,
+  lookupProfile,
   parseHandle,
   removeTarget,
+  searchCreators,
   setTargetActive,
+  unfollowCreator,
 } from '../lib/watchlist.js';
 
 const results = [];
@@ -37,6 +40,7 @@ async function check(name, fn) {
 
 const suffix = Date.now();
 const accounts = [];
+const createdCreators = [];
 const signIn = async (tag, name) => {
   const session = await ensureAccount(`test:${suffix}:${tag}`, async () => ({ email: `product-test-${suffix}-${tag}@content-story.dev`, name }));
   if (!accounts.some((a) => a.workspace.id === session.workspace.id)) accounts.push(session);
@@ -101,13 +105,25 @@ try {
     assert.equal(detectPlatform('@mkbhd'), null);
   });
 
-  await check('adding a creator we already collect matches them by handle', async () => {
-    const res = await addCreator(ws, { name: '', handles: { x: 'x.com/mreflow' } });
-    assert.equal(res.matchedExisting, true);
-    assert.equal(res.creatorName, 'Matt Wolfe');
+  await check('the finder searches by name or handle and looks up pasted links', async () => {
+    assert.ok((await searchCreators(ws, 'berman')).some((c) => c.name === 'Matthew Berman'));
+    assert.ok((await searchCreators(ws, 'mkbhd')).some((c) => c.name.startsWith('Marques')));
+    assert.deepEqual(await searchCreators(ws, 'b'), []);
+    const byLink = await lookupProfile(ws, 'https://x.com/mreflow');
+    assert.equal(byLink.status, 'existing');
+    assert.equal(byLink.creator.name, 'Matt Wolfe');
+    assert.ok(byLink.creator.covered && byLink.creator.handles.length >= 3);
+    assert.equal((await lookupProfile(ws, '@mkbhd')).status, 'existing');
+    assert.equal((await lookupProfile(ws, `@nobody_${suffix}`)).status, 'needs-platform');
+    const fresh = await lookupProfile(ws, `https://www.instagram.com/cs_test_${suffix}/`);
+    assert.equal(fresh.status, 'new');
+    assert.deepEqual(fresh.profile, { platform: 'instagram', handle: `@cs_test_${suffix}`, url: `https://www.instagram.com/cs_test_${suffix}/` });
+    assert.equal((await lookupProfile(ws, `@cs_test_${suffix}`, 'tiktok')).status, 'new');
+    assert.equal((await lookupProfile(ws, 'reddit.com/r/OpenAI')).status, 'community');
+    assert.equal((await lookupProfile(ws, 'https://x.com/')).status, 'invalid');
+    assert.equal(await followCreator(ws, byLink.creator.id), true);
     const [target] = await listTargets(ws);
-    assert.ok(target.handles.length >= 3, 'fills in their other platforms');
-    await assert.rejects(addCreator(ws, { handles: { youtube: '@mreflow' } }), /already follow/);
+    assert.equal(target.creator_name, 'Matt Wolfe');
   });
 
   await check('following from the catalog, unfollowing, and following again', async () => {
@@ -120,13 +136,33 @@ try {
     assert.equal(await followCreator(ws, berman.id), true);
   });
 
-  await check('a pasted link finds its platform; a bare handle needs one', async () => {
-    await assert.rejects(addByLink(ws, { link: '@someone' }), /which platform/);
-    const res = await addByLink(ws, { link: 'https://www.tiktok.com/@mrwhosetheboss' });
-    assert.equal(res.kind, 'creator');
-    assert.equal(res.matchedExisting, true);
-    const sub = await addByLink(ws, { link: 'https://www.reddit.com/r/LocalLLaMA/' });
-    assert.equal(sub.name, 'r/LocalLLaMA');
+  await check('a new creator is added with several profiles; a covered profile is refused', async () => {
+    const created = await createCreator(ws, {
+      name: '  Test   Creator ',
+      profiles: [
+        { platform: 'instagram', input: `https://www.instagram.com/cs_test_${suffix}/` },
+        { platform: 'youtube', input: `@cs_test_${suffix}` },
+      ],
+    });
+    createdCreators.push(created.id);
+    assert.equal(created.name, 'Test Creator');
+    assert.deepEqual(
+      created.handles.map((h) => h.platform),
+      ['youtube', 'instagram'],
+    );
+    assert.ok(created.target_id && !created.covered);
+    assert.equal((await lookupProfile(ws, `https://www.youtube.com/@cs_test_${suffix}`)).creator.id, created.id);
+    await assert.rejects(
+      createCreator(ws, { name: 'Copy', profiles: [{ platform: 'x', input: 'https://x.com/MKBHD' }] }),
+      (err) => err instanceof ExistingCreatorError && err.creator.name.startsWith('Marques'),
+    );
+    await assert.rejects(createCreator(ws, { name: 'Two', profiles: [{ platform: 'x', input: '@one_a' }, { platform: 'x', input: '@two_b' }] }), /Two X profiles/);
+    await assert.rejects(createCreator(ws, { name: 'Nobody', profiles: [] }), /at least one profile/);
+    const later = await createCreator(ws, { name: 'Picked Later', profiles: [{ platform: 'tiktok', input: `@cs_pick_${suffix}` }], follow: false });
+    createdCreators.push(later.id);
+    assert.equal(later.target_id, null);
+    assert.equal(await unfollowCreator(ws, created.id), true);
+    assert.equal(await unfollowCreator(ws, created.id), false);
   });
 
   await check('stories involving who you follow show under For you', async () => {
@@ -216,6 +252,7 @@ try {
     await pool.query('delete from workspaces where id = $1', [account.workspace.id]);
     await pool.query('delete from users where id = $1', [account.user.id]);
   }
+  if (createdCreators.length) await pool.query('delete from creators where id = any($1::uuid[])', [createdCreators]);
   await pool.end();
 }
 

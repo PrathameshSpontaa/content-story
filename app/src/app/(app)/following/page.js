@@ -2,14 +2,14 @@ import Link from 'next/link';
 import { getPlanState, listPriceList } from '../../../../lib/accounts.js';
 import { getCatalog } from '../../../../lib/catalog.js';
 import { PLATFORM_NAMES, plural } from '../../../../lib/format.js';
-import { PLATFORMS } from '../../../../lib/pricing.js';
 import { requireSession } from '../../../../lib/session.js';
 import ActionForm from '../../components/action-form.js';
 import Avatar from '../../components/avatar.js';
+import CreatorFinder from '../../components/creator-finder.js';
 import Icon from '../../components/icons.js';
 import PlatformMark from '../../components/platform-mark.js';
 import SubmitButton from '../../components/submit-button.js';
-import { addByLinkAction, addTopicAction, followCreatorAction, followTopicAction, unfollowAction } from './actions.js';
+import { addTopicAction, followCreatorAction, followTopicAction, unfollowAction } from './actions.js';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Following' };
@@ -105,8 +105,9 @@ export default async function FollowingPage() {
   const workspaceId = session.workspace.id;
   const [{ creators, communities, topics }, plan, prices] = await Promise.all([getCatalog(workspaceId), getPlanState(workspaceId), listPriceList()]);
 
-  const followedCreators = creators.filter((c) => c.target_id).length;
-  const sourcesUsed = followedCreators + communities.filter((c) => c.target_id).length;
+  const followedCreators = creators.filter((c) => c.target_id);
+  const suggestedCreators = creators.filter((c) => !c.target_id);
+  const sourcesUsed = followedCreators.length + communities.filter((c) => c.target_id).length;
   const followedTopics = topics.filter((t) => t.target_id);
   const suggestedTopics = topics.filter((t) => !t.target_id);
   const sourcesFull = sourcesUsed >= plan.maxSources;
@@ -133,42 +134,30 @@ export default async function FollowingPage() {
       <section className="fsection" aria-labelledby="h-creators">
         <div className="fsection-head">
           <h2 id="h-creators">Creators</h2>
-          <p>{followedCreators ? `You follow ${followedCreators} of ${creators.length}` : `${creators.length} creators we already cover`}</p>
+          <p>{followedCreators.length ? `You follow ${followedCreators.length}` : 'Follow the people your audience listens to'}</p>
         </div>
-        <div className="people">
-          {creators.map((c) => (
-            <PersonCard key={c.id} creator={c} full={sourcesFull} />
-          ))}
-        </div>
-        <details className="addbox">
-          <summary>
-            <Icon name="plus" size={16} /> Follow someone we don’t cover yet
-          </summary>
-          <ActionForm action={addByLinkAction} submitLabel="Follow" pendingLabel="Adding…" className="addform">
-            <label className="field">
-              <span>Profile link or handle</span>
-              <input name="link" placeholder="instagram.com/name or @name" required autoComplete="off" spellCheck={false} />
-            </label>
-            <label className="field">
-              <span>Platform</span>
-              <select name="platform" defaultValue="">
-                <option value="">Detect from link</option>
-                {PLATFORMS.map((p) => (
-                  <option key={p} value={p}>
-                    {PLATFORM_NAMES[p]}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field">
-              <span>
-                Name <small>optional</small>
-              </span>
-              <input name="name" maxLength={80} placeholder="e.g. Tanmay Bhat" autoComplete="off" />
-            </label>
-          </ActionForm>
-          <p className="hint">If we already collect them, we match them and fill in their other platforms.</p>
-        </details>
+        <CreatorFinder mode="follow" />
+
+        {followedCreators.length ? (
+          <>
+            <h3 className="sublabel">You follow</h3>
+            <div className="people">
+              {followedCreators.map((c) => (
+                <PersonCard key={c.id} creator={c} full={sourcesFull} />
+              ))}
+            </div>
+          </>
+        ) : null}
+        {suggestedCreators.length ? (
+          <>
+            <h3 className="sublabel">Already covered</h3>
+            <div className="people">
+              {suggestedCreators.map((c) => (
+                <PersonCard key={c.id} creator={c} full={sourcesFull} />
+              ))}
+            </div>
+          </>
+        ) : null}
       </section>
 
       <section className="fsection" aria-labelledby="h-subs">

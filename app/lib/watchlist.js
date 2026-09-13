@@ -5,69 +5,27 @@ import { getPlanState } from './accounts.js';
 import { pool, tx } from './db.js';
 import { PLATFORM_NAMES } from './format.js';
 import { PLATFORMS } from './pricing.js';
+import { CREATOR_PLATFORMS, WatchlistError, detectPlatform, parseCommunity, parseHandle } from './profiles.js';
 
-export class WatchlistError extends Error {}
+export { CREATOR_PLATFORMS, WatchlistError, detectPlatform, parseCommunity, parseHandle } from './profiles.js';
 
-export const CREATOR_PLATFORMS = ['x', 'youtube', 'linkedin', 'instagram', 'tiktok'];
-export const DAILY_ACTION = { creator: 'track_creator_day', keyword: 'track_keyword_day', community: 'track_community_day' };
-
-// Accepts a pasted profile link or a handle and returns the stored form: '@name' (LinkedIn uses
-// the profile slug), matching what the collectors already store.
-export function parseHandle(platform, raw) {
-  const input = String(raw ?? '').trim();
-  if (!input) return null;
-  const path = input.replace(/^https?:\/\//i, '').replace(/^(www\.|m\.|mobile\.)/i, '');
-  const end = '(?:[/?#]|$)';
-  const fail = (hint) => {
-    throw new WatchlistError(`${PLATFORM_NAMES[platform]}: “${input}” doesn’t look like a profile. ${hint}`);
-  };
-
-  switch (platform) {
-    case 'x': {
-      const m = path.match(new RegExp(`^(?:x|twitter)\\.com/@?([A-Za-z0-9_]{1,15})${end}`, 'i')) ?? input.match(/^@?([A-Za-z0-9_]{1,15})$/);
-      if (!m) fail('Use @handle or x.com/handle.');
-      return { handle: `@${m[1]}`, url: `https://x.com/${m[1]}` };
-    }
-    case 'youtube': {
-      const channel = path.match(/^youtube\.com\/channel\/(UC[A-Za-z0-9_-]{22})/i);
-      if (channel) return { handle: channel[1], url: `https://www.youtube.com/channel/${channel[1]}` };
-      const m = path.match(new RegExp(`^youtube\\.com/@([A-Za-z0-9._-]{3,30})${end}`, 'i')) ?? input.match(/^@?([A-Za-z0-9._-]{3,30})$/);
-      if (!m) fail('Use @handle or youtube.com/@handle.');
-      return { handle: `@${m[1]}`, url: `https://www.youtube.com/@${m[1]}` };
-    }
-    case 'instagram': {
-      const m = path.match(new RegExp(`^instagram\\.com/([A-Za-z0-9._]{1,30})${end}`, 'i')) ?? input.match(/^@?([A-Za-z0-9._]{1,30})$/);
-      if (!m || ['p', 'reel', 'reels', 'explore', 'stories'].includes(m[1].toLowerCase())) fail('Use @handle or instagram.com/handle.');
-      return { handle: `@${m[1]}`, url: `https://www.instagram.com/${m[1]}/` };
-    }
-    case 'tiktok': {
-      const m = path.match(new RegExp(`^tiktok\\.com/@([A-Za-z0-9._]{2,24})${end}`, 'i')) ?? input.match(/^@?([A-Za-z0-9._]{2,24})$/);
-      if (!m) fail('Use @handle or tiktok.com/@handle.');
-      return { handle: `@${m[1]}`, url: `https://www.tiktok.com/@${m[1]}` };
-    }
-    case 'linkedin': {
-      const company = path.match(/^linkedin\.com\/company\/([A-Za-z0-9%_-]{2,100})/i);
-      if (company) return { handle: `company/${company[1].toLowerCase()}`, url: `https://www.linkedin.com/company/${company[1]}/` };
-      const m = path.match(/^linkedin\.com\/in\/([A-Za-z0-9%_-]{2,100})/i);
-      if (!m) fail('Paste the profile link, like linkedin.com/in/name.');
-      return { handle: m[1].toLowerCase(), url: `https://www.linkedin.com/in/${m[1]}/` };
-    }
-    default:
-      return null;
+// A profile that already belongs to a creator; `creator` is who it belongs to.
+export class ExistingCreatorError extends WatchlistError {
+  constructor(message, creator) {
+    super(message);
+    this.creator = creator;
   }
 }
 
-export function parseCommunity(raw) {
-  const input = String(raw ?? '').trim();
-  const m = input.replace(/^https?:\/\//i, '').match(/^(?:(?:www\.|old\.)?reddit\.com\/)?\/?r\/([A-Za-z0-9_]{2,21})\/?$/i) ?? input.match(/^([A-Za-z0-9_]{2,21})$/);
-  if (!m) throw new WatchlistError(`“${input}” isn’t a subreddit. Use r/name or a reddit.com/r/name link.`);
-  return `r/${m[1]}`;
-}
+export const DAILY_ACTION = { creator: 'track_creator_day', keyword: 'track_keyword_day', community: 'track_community_day' };
 
 // ILIKE pattern that matches the text literally (no user-supplied wildcards).
 export const likeEscaped = (sql) => `'%' || replace(replace(replace(${sql}, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'`;
 
 const LATEST_PASSED = `join lateral (select * from story_versions v where v.story_id = s.id and v.passed order by v.version desc limit 1) v on true`;
+const PLATFORM_ORDER = `array['x', 'youtube', 'linkedin', 'instagram', 'tiktok', 'reddit']::platform[]`;
+const UUID = /^[0-9a-f-]{36}$/i;
+const cleanKeyword = (value) => String(value ?? '').trim().replace(/\s+/g, ' ');
 
 export async function listTargets(workspaceId) {
   const { rows } = await pool.query(
@@ -134,9 +92,6 @@ const FOLLOW_QUERY = `
   on conflict (workspace_id, kind, lower(query)) where kind <> 'creator'
   do update set active = true, paused_reason = null where not tracking_targets.active`;
 
-const UUID = /^[0-9a-f-]{36}$/i;
-const cleanKeyword = (value) => String(value ?? '').trim().replace(/\s+/g, ' ');
-
 export async function followCreator(workspaceId, creatorId) {
   if (!UUID.test(String(creatorId))) throw new WatchlistError('Choose a creator from the list.');
   const plan = await getPlanState(workspaceId);
@@ -148,28 +103,131 @@ export async function followCreator(workspaceId, creatorId) {
   });
 }
 
-// Which platform a pasted profile link belongs to. Bare handles return null.
-export function detectPlatform(raw) {
-  const path = String(raw ?? '').trim().replace(/^https?:\/\//i, '').replace(/^(www\.|m\.|mobile\.|old\.)/i, '').toLowerCase();
-  if (/^(x|twitter)\.com\//.test(path)) return 'x';
-  if (/^(youtube\.com|youtu\.be)\//.test(path)) return 'youtube';
-  if (/^linkedin\.com\//.test(path)) return 'linkedin';
-  if (/^instagram\.com\//.test(path)) return 'instagram';
-  if (/^tiktok\.com\//.test(path)) return 'tiktok';
-  if (/^reddit\.com\/r\//.test(path) || /^\/?r\/[a-z0-9_]+\/?$/.test(path)) return 'reddit';
-  return null;
+export async function unfollowCreator(workspaceId, creatorId) {
+  if (!UUID.test(String(creatorId))) return false;
+  const { rowCount } = await pool.query(`delete from tracking_targets where workspace_id = $1 and kind = 'creator' and creator_id = $2`, [workspaceId, creatorId]);
+  return rowCount === 1;
 }
 
-// One box for anyone we don't cover yet: a profile link, or a handle plus its platform.
-export async function addByLink(workspaceId, { link, platform, name }) {
-  const input = String(link ?? '').trim();
-  if (!input) throw new WatchlistError('Paste a profile link or a handle.');
-  const detected = detectPlatform(input) ?? (PLATFORMS.includes(platform) ? platform : null);
-  if (!detected) throw new WatchlistError('We couldn’t tell which platform that is. Paste the full profile link, or choose the platform.');
-  if (detected === 'reddit') return { kind: 'community', name: (await addTopic(workspaceId, { kind: 'community', query: input })).query };
-  const { creatorName, matchedExisting } = await addCreator(workspaceId, { name, handles: { [detected]: input } });
-  return { kind: 'creator', name: creatorName, matchedExisting };
+// ─── Finding and adding creators ───────────────────────────────────────────
+
+// A creator as the finder shows it. $1 is the workspace; `where` narrows the creators.
+const creatorSummary = (where) => `
+  select * from (
+    select c.id, c.name,
+           json_agg(json_build_object('platform', h.platform, 'handle', h.handle, 'url', h.url) order by array_position(${PLATFORM_ORDER}, h.platform)) as handles,
+           bool_or(h.verified) as verified,
+           (select count(*) from posts p join creator_handles ph on ph.id = p.handle_id where ph.creator_id = c.id)::int as posts,
+           array(select distinct sp.story_id
+                   from story_posts sp
+                   join stories s on s.id = sp.story_id and s.published_at is not null and s.status not in ('merged', 'rejected')
+                   join posts p on p.id = sp.post_id
+                   join creator_handles sh on sh.id = p.handle_id
+                  where sh.creator_id = c.id) as story_ids,
+           (select t.id from tracking_targets t where t.workspace_id = $1 and t.kind = 'creator' and t.creator_id = c.id and t.active) as target_id
+      from creators c
+      join creator_handles h on h.creator_id = c.id
+     where ${where}
+     group by c.id
+  ) x`;
+
+// Covered: we collect this creator already (a verified handle, or posts on record).
+const withCovered = (row) => ({ ...row, covered: Boolean(row.verified) || row.posts > 0 });
+
+export async function getCreatorSummary(workspaceId, creatorId) {
+  const { rows } = await pool.query(creatorSummary('c.id = $2'), [workspaceId, creatorId]);
+  return rows[0] ? withCovered(rows[0]) : null;
 }
+
+// Everyone we know whose name or handle contains the query, best matches first.
+export async function searchCreators(workspaceId, query, limit = 8) {
+  const q = cleanKeyword(query).replace(/^@/, '').slice(0, 60);
+  if (q.length < 2) return [];
+  const { rows } = await pool.query(
+    `${creatorSummary(`c.name ilike ${likeEscaped('$2')} or exists (select 1 from creator_handles m where m.creator_id = c.id and m.handle ilike ${likeEscaped('$2')})`)}
+     order by left(lower(name), length($2)) = lower($2) desc, verified desc, cardinality(story_ids) desc, posts desc, name
+     limit $3`,
+    [workspaceId, q, limit],
+  );
+  return rows.map(withCovered);
+}
+
+// What a pasted link or handle is: a creator we already know, a new profile, or a handle that
+// needs its platform. `platform` answers that question for bare handles.
+export async function lookupProfile(workspaceId, raw, platform = null) {
+  const input = String(raw ?? '').trim();
+  if (!input) return { status: 'invalid', message: 'Paste a profile link or a handle.' };
+  const detected = detectPlatform(input) ?? (CREATOR_PLATFORMS.includes(platform) ? platform : null);
+  if (detected === 'reddit') return { status: 'community', message: 'That’s a subreddit. Follow it in the Subreddits section.' };
+
+  if (!detected) {
+    const bare = input.replace(/^@/, '');
+    if (!/^[A-Za-z0-9._-]{1,40}$/.test(bare)) return { status: 'invalid', message: 'Paste a profile link, like instagram.com/name, or a handle like @name.' };
+    const { rows } = await pool.query(
+      `${creatorSummary(`c.id in (select creator_id from creator_handles where lower(handle) in (lower($2), lower('@' || $2)))`)} order by verified desc limit 1`,
+      [workspaceId, bare],
+    );
+    return rows[0] ? { status: 'existing', creator: withCovered(rows[0]) } : { status: 'needs-platform', handle: `@${bare}` };
+  }
+
+  let profile;
+  try {
+    profile = { platform: detected, ...parseHandle(detected, input) };
+  } catch (err) {
+    if (err instanceof WatchlistError) return { status: 'invalid', message: err.message };
+    throw err;
+  }
+  const { rows } = await pool.query(
+    creatorSummary(`c.id in (select creator_id from creator_handles where platform = $2::platform and lower(handle) = lower($3))`),
+    [workspaceId, detected, profile.handle],
+  );
+  return rows[0] ? { status: 'existing', creator: withCovered(rows[0]), profile } : { status: 'new', profile };
+}
+
+// A creator we don't cover yet, with a profile on each platform they post on. Refuses profiles
+// that already belong to someone, so the same person is never collected twice.
+export async function createCreator(workspaceId, { name, profiles, follow = true }) {
+  const cleanName = cleanKeyword(name).slice(0, 80);
+  if (cleanName.length < 2) throw new WatchlistError('Add the creator’s name.');
+
+  const parsed = [];
+  for (const p of Array.isArray(profiles) ? profiles.slice(0, 10) : []) {
+    if (!CREATOR_PLATFORMS.includes(p?.platform)) continue;
+    const h = parseHandle(p.platform, p.input);
+    if (!h) continue;
+    const same = parsed.find((x) => x.platform === p.platform);
+    if (same && same.handle.toLowerCase() !== h.handle.toLowerCase()) {
+      throw new WatchlistError(`Two ${PLATFORM_NAMES[p.platform]} profiles. Keep the one that belongs to ${cleanName}.`);
+    }
+    if (!same) parsed.push({ platform: p.platform, ...h });
+  }
+  if (!parsed.length) throw new WatchlistError('Add at least one profile link.');
+
+  const plan = follow ? await getPlanState(workspaceId) : null;
+  const result = await tx(async (client) => {
+    await client.query('select 1 from workspaces where id = $1 for update', [workspaceId]);
+    const taken = await client.query(
+      `select creator_id from creator_handles where (platform::text, lower(handle)) in (select * from unnest($1::text[], $2::text[])) limit 1`,
+      [parsed.map((p) => p.platform), parsed.map((p) => p.handle.toLowerCase())],
+    );
+    if (taken.rows[0]) return { existingId: taken.rows[0].creator_id };
+    if (follow) await assertRoom(client, workspaceId, 'creator', plan);
+    const id = (await client.query('insert into creators (name) values ($1) returning id', [cleanName])).rows[0].id;
+    for (const p of parsed) {
+      await client.query('insert into creator_handles (creator_id, platform, handle, url) values ($1, $2, $3, $4)', [id, p.platform, p.handle, p.url]);
+    }
+    if (follow) await client.query(FOLLOW_CREATOR, [workspaceId, id]);
+    return { id };
+  });
+
+  if (result.existingId) {
+    const existing = await getCreatorSummary(workspaceId, result.existingId);
+    throw new ExistingCreatorError(`One of those profiles belongs to ${existing.name}, who’s already on Content-Story.`, existing);
+  }
+  return getCreatorSummary(workspaceId, result.id);
+}
+
+// ─── Onboarding and lists ──────────────────────────────────────────────────
 
 // First-run picks, saved in one go. Picks past the plan's limits are left out.
 export async function completeOnboarding(workspaceId, { useCase, creatorIds, communities, keywords }) {
@@ -238,41 +296,6 @@ export async function listFollowing(workspaceId) {
     [workspaceId],
   );
   return rows;
-}
-
-export async function addCreator(workspaceId, { name, handles }) {
-  const parsed = CREATOR_PLATFORMS.map((p) => [p, parseHandle(p, handles?.[p])]).filter(([, h]) => h);
-  if (!parsed.length) throw new WatchlistError('Add at least one profile: an X, YouTube, LinkedIn, Instagram or TikTok handle or link.');
-  const cleanName = String(name ?? '').trim().replace(/\s+/g, ' ').slice(0, 80);
-  const plan = await getPlanState(workspaceId);
-
-  return tx(async (client) => {
-    await client.query('select 1 from workspaces where id = $1 for update', [workspaceId]);
-    await assertRoom(client, workspaceId, 'creator', plan);
-
-    const existing = await client.query(
-      `select creator_id from creator_handles
-        where (platform::text, lower(handle)) in (select * from unnest($1::text[], $2::text[]))
-        limit 1`,
-      [parsed.map(([p]) => p), parsed.map(([, h]) => h.handle.toLowerCase())],
-    );
-    let creatorId = existing.rows[0]?.creator_id;
-    if (!creatorId) {
-      const fallbackName = parsed[0][1].handle.replace(/^@|^company\//, '');
-      creatorId = (await client.query('insert into creators (name) values ($1) returning id', [cleanName || fallbackName])).rows[0].id;
-    }
-    for (const [platform, h] of parsed) {
-      await client.query(
-        `insert into creator_handles (creator_id, platform, handle, url) values ($1, $2, $3, $4)
-         on conflict (platform, (lower(handle))) do nothing`,
-        [creatorId, platform, h.handle, h.url],
-      );
-    }
-    const inserted = await client.query(FOLLOW_CREATOR, [workspaceId, creatorId]);
-    const { name: creatorName } = (await client.query('select name from creators where id = $1', [creatorId])).rows[0];
-    if (!inserted.rowCount) throw new WatchlistError(`You already follow ${creatorName}.`);
-    return { creatorName, matchedExisting: Boolean(existing.rows[0]) };
-  });
 }
 
 export async function addTopic(workspaceId, { kind, query, platforms }) {

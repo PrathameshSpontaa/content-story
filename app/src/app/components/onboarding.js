@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useTransition } from 'react';
 import Avatar from './avatar.js';
+import CreatorFinder from './creator-finder.js';
 import Icon from './icons.js';
 import PlatformMark from './platform-mark.js';
 
@@ -13,6 +14,7 @@ const cleanWord = (value) => value.trim().replace(/\s+/g, ' ');
 // and the footer shows how many of this week's stories the picks bring in.
 export default function Onboarding({ firstName, useCases, creators, communities, topics, totalStories, limits, initialUseCase, finish }) {
   const [step, setStep] = useState(0);
+  const [creatorList, setCreatorList] = useState(creators);
   const [useCase, setUseCase] = useState(initialUseCase ?? null);
   const [picked, setPicked] = useState(() => new Set(creators.filter((c) => c.target_id).map((c) => c.id)));
   const [subs, setSubs] = useState(() => new Set(communities.filter((c) => c.target_id).map((c) => c.name)));
@@ -31,11 +33,11 @@ export default function Onboarding({ firstName, useCases, creators, communities,
 
   const covered = useMemo(() => {
     const ids = new Set();
-    for (const c of creators) if (picked.has(c.id)) c.story_ids.forEach((id) => ids.add(id));
+    for (const c of creatorList) if (picked.has(c.id)) c.story_ids.forEach((id) => ids.add(id));
     for (const c of communities) if (subs.has(c.name)) c.story_ids.forEach((id) => ids.add(id));
     for (const t of topics) if (words.some((w) => w.toLowerCase() === t.name.toLowerCase())) t.story_ids.forEach((id) => ids.add(id));
     return ids.size;
-  }, [picked, subs, words, creators, communities, topics]);
+  }, [picked, subs, words, creatorList, communities, topics]);
 
   const sourceLimitMessage = `${limits.planName} includes ${count(limits.maxSources, 'creator or subreddit', 'creators and subreddits')}. Unpick one to add another.`;
 
@@ -49,9 +51,16 @@ export default function Onboarding({ firstName, useCases, creators, communities,
     setSet(next);
   }
   const toggleCreator = (id) => toggleIn(picked, setPicked, id);
+
+  // Someone found or added through the search box joins the list; a new creator is picked straight away.
+  function pickFromFinder(creator, { created = false } = {}) {
+    setCreatorList((list) => (list.some((c) => c.id === creator.id) ? list : [creator, ...list]));
+    if (created && picked.has(creator.id)) return;
+    toggleCreator(creator.id);
+  }
   const toggleSub = (name) => toggleIn(subs, setSubs, name);
 
-  const allCreatorsPicked = creators.length > 0 && creators.every((c) => picked.has(c.id));
+  const allCreatorsPicked = creatorList.length > 0 && creatorList.every((c) => picked.has(c.id));
   function pickAllCreators() {
     setError(null);
     if (allCreatorsPicked) {
@@ -59,7 +68,7 @@ export default function Onboarding({ firstName, useCases, creators, communities,
       return;
     }
     const next = new Set(picked);
-    for (const c of creators) {
+    for (const c of creatorList) {
       if (next.size + subs.size >= limits.maxSources) break;
       next.add(c.id);
     }
@@ -119,7 +128,8 @@ export default function Onboarding({ firstName, useCases, creators, communities,
       {step === 1 ? (
         <section className="ob-panel" aria-labelledby="ob-h-1">
           <h1 id="ob-h-1">{useCase === 'agency' ? 'Follow the creators you work with' : 'Follow creators you care about'}</h1>
-          <p className="ob-lede">We already read these creators’ posts on X, YouTube, LinkedIn, Instagram and TikTok, and the comments under them. Pick any; you can add others later.</p>
+          <p className="ob-lede">We already read these creators’ posts on X, YouTube, LinkedIn, Instagram and TikTok, and the comments under them. Pick any, or find someone else.</p>
+          <CreatorFinder mode="pick" pickedIds={[...picked]} onPick={pickFromFinder} placeholder="Someone else? Search by name or paste their profile link" />
           <div className="ob-bar-inline">
             <span>
               {sourcesUsed} of {limits.maxSources} picked
@@ -129,7 +139,7 @@ export default function Onboarding({ firstName, useCases, creators, communities,
             </button>
           </div>
           <div className="picks">
-            {creators.map((c) => {
+            {creatorList.map((c) => {
               const on = picked.has(c.id);
               return (
                 <button key={c.id} type="button" className={`pick${on ? ' on' : ''}`} aria-pressed={on} onClick={() => toggleCreator(c.id)}>
@@ -141,7 +151,9 @@ export default function Onboarding({ firstName, useCases, creators, communities,
                         <PlatformMark key={h.platform} platform={h.platform} size="xs" />
                       ))}
                     </span>
-                    <span className="pick-meta">{c.story_ids.length ? `In ${count(c.story_ids.length, 'story', 'stories')} this week` : `${count(c.posts, 'post')} this week`}</span>
+                    <span className="pick-meta">
+                      {c.story_ids.length ? `In ${count(c.story_ids.length, 'story', 'stories')} this week` : c.posts ? `${count(c.posts, 'post')} this week` : 'New · collected after setup'}
+                    </span>
                   </span>
                   <span className="pick-state" aria-hidden="true">
                     <Icon name={on ? 'check' : 'plus'} size={15} />
