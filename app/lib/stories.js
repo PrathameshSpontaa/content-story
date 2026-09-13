@@ -1,6 +1,7 @@
 // Story data for the web app, read from Postgres. Pages never write SQL themselves.
 import { pool } from './db.js';
 import { PLATFORM_NAMES, plural, truncate } from './format.js';
+import { likeEscaped } from './watchlist.js';
 
 // A story leads the feed only if independent sources covered it and people reacted.
 export const TOP = { minSources: 2, minComments: 10 };
@@ -19,6 +20,17 @@ const AUDIENCE = `
      cross join lateral unnest(g.comment_ids) as c(cid)
     where sp.story_id = s.id)`;
 
+// Does watchlist entry `t` match story `s` (with its latest version `v`)?
+const TARGET_MATCHES_STORY = `(
+  (t.kind = 'creator' and exists (
+     select 1 from story_posts sp join posts po on po.id = sp.post_id join creator_handles h on h.id = po.handle_id
+      where sp.story_id = s.id and h.creator_id = t.creator_id))
+  or (t.kind = 'community' and exists (
+     select 1 from story_posts sp join posts po on po.id = sp.post_id
+      where sp.story_id = s.id and lower(po.community) = lower(t.query)))
+  or (t.kind = 'keyword' and (v.written::text || v.narrative::text) ilike ${likeEscaped('t.query')})
+)`;
+
 export function whyNotTop({ sources, creators, audience }) {
   if ((sources ?? creators ?? 0) < TOP.minSources) return 'one source';
   if (!audience) return 'no comments collected';
@@ -26,23 +38,58 @@ export function whyNotTop({ sources, creators, audience }) {
   return '';
 }
 
-export async function getSharedFeed() {
-  const { rows } = await pool.query(`
-    select s.id, s.category, s.heat, s.first_post_at, s.last_post_at,
-           v.narrative #>> '{main_character,name}' as main_character,
-           coalesce(v.feed_edit ->> 'headline', v.written ->> 'headline') as headline,
-           v.feed_edit ->> 'dek' as dek,
-           coalesce(v.feed_edit -> 'platform_strip', '[]'::jsonb) as platform_strip,
-           (v.stats ->> 'creators')::int as creators,
-           (v.stats ->> 'sources')::int as sources,
-           (v.stats ->> 'platforms')::int as platforms,
-           ${AUDIENCE} as audience
-      from stories s
-      join feeds f on f.id = s.feed_id and f.workspace_id is null
-      ${LATEST_PASSED_VERSION}
-     where s.published_at is not null and s.status not in ('merged', 'rejected')
-     order by s.heat desc nulls last`);
+// The shared feed, optionally narrowed to a workspace's watchlist or saved stories, a category,
+// a platform, or a search. `tracked` names the watchlist entries each story involves.
+export async function getFeed({ workspaceId = null, scope = 'all', category = '', platform = '', q = '' } = {}) {
+  const params = [workspaceId];
+  const param = (value) => {
+    params.push(value);
+    return `$${params.length}`;
+  };
+  const where = ['s.published_at is not null', `s.status not in ('merged', 'rejected')`];
+  if (category) where.push(`s.category = ${param(category)}`);
+  if (platform) {
+    where.push(`exists (select 1 from story_posts sp join posts po on po.id = sp.post_id where sp.story_id = s.id and po.platform::text = ${param(platform)})`);
+  }
+  if (q) {
+    where.push(`concat_ws(' ', v.feed_edit ->> 'headline', v.feed_edit ->> 'dek', v.written ->> 'headline', v.narrative #>> '{main_character,name}', s.category,
+                          jsonb_path_query_array(v.written, '$.narrative[*].sentence')::text) ilike ${likeEscaped(param(q))}`);
+  }
+  if (scope === 'watchlist') where.push(`exists (select 1 from tracking_targets t where t.workspace_id = $1 and t.active and ${TARGET_MATCHES_STORY})`);
+  if (scope === 'saved') where.push('exists (select 1 from saved_stories ss where ss.story_id = s.id and ss.workspace_id = $1)');
+
+  const { rows } = await pool.query(
+    `select s.id, s.category, s.heat, s.first_post_at, s.last_post_at,
+            v.narrative #>> '{main_character,name}' as main_character,
+            coalesce(v.feed_edit ->> 'headline', v.written ->> 'headline') as headline,
+            v.feed_edit ->> 'dek' as dek,
+            coalesce(v.feed_edit -> 'platform_strip', '[]'::jsonb) as platform_strip,
+            (v.stats ->> 'creators')::int as creators,
+            (v.stats ->> 'sources')::int as sources,
+            (v.stats ->> 'platforms')::int as platforms,
+            ${AUDIENCE} as audience,
+            array(select distinct coalesce(c.name, t.query)
+                    from tracking_targets t left join creators c on c.id = t.creator_id
+                   where t.workspace_id = $1::uuid and t.active and ${TARGET_MATCHES_STORY}) as tracked,
+            exists (select 1 from saved_stories ss where ss.story_id = s.id and ss.workspace_id = $1::uuid) as saved
+       from stories s
+       join feeds f on f.id = s.feed_id and f.workspace_id is null
+       ${LATEST_PASSED_VERSION}
+      where ${where.join(' and ')}
+      order by s.heat desc nulls last`,
+    params,
+  );
   return rows.map((r) => ({ ...r, whyNotTop: whyNotTop(r) }));
+}
+
+export const getSharedFeed = () => getFeed();
+
+export async function getCategories() {
+  const { rows } = await pool.query(
+    `select distinct s.category from stories s join feeds f on f.id = s.feed_id and f.workspace_id is null
+      where s.published_at is not null and s.category is not null order by 1`,
+  );
+  return rows.map((r) => r.category);
 }
 
 export async function getTotals() {
@@ -89,6 +136,34 @@ export async function getStory(id) {
     sources: describeSources(posts.rows, groups.rows, claims.rows, comments.rows),
     platforms: platformNumbers(story, posts.rows, groups.rows),
   };
+}
+
+// What this workspace has to do with a story: saved or not, and which watchlist entries it involves.
+export async function getStoryContext(storyId, workspaceId) {
+  const { rows } = await pool.query(
+    `select exists (select 1 from saved_stories ss where ss.story_id = s.id and ss.workspace_id = $2) as saved,
+            array(select distinct coalesce(c.name, t.query)
+                    from tracking_targets t left join creators c on c.id = t.creator_id
+                   where t.workspace_id = $2 and t.active and ${TARGET_MATCHES_STORY}) as tracked
+       from stories s
+       ${LATEST_PASSED_VERSION}
+      where s.id = $1`,
+    [storyId, workspaceId],
+  );
+  return rows[0] ?? { saved: false, tracked: [] };
+}
+
+export async function toggleSaved(workspaceId, userId, storyId) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(storyId))) return false;
+  const removed = await pool.query('delete from saved_stories where workspace_id = $1 and story_id = $2', [workspaceId, storyId]);
+  if (removed.rowCount) return false;
+  await pool.query(
+    `insert into saved_stories (workspace_id, story_id, saved_by)
+     select $1, s.id, $3 from stories s where s.id = $2 and s.published_at is not null
+     on conflict do nothing`,
+    [workspaceId, storyId, userId],
+  );
+  return true;
 }
 
 const handleOf = (post) => post?.handle ?? post?.community ?? '';

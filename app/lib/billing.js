@@ -65,6 +65,65 @@ export async function handleWebhook(provider, rawBody, headers) {
   }
 }
 
+// A problem the customer can act on; its message is safe to show.
+export class PaymentError extends Error {}
+
+// A paid top-up, from its webhook or from the checkout callback. Both paths use the same
+// idempotency key, so whichever arrives second grants nothing.
+export async function recordTopupPaid(event) {
+  if (!event.workspaceId || !(event.credits > 0)) throw new Error('Top-up event is missing its workspace or credits');
+  await pool.query(
+    `insert into payments (workspace_id, provider, provider_payment_id, provider_order_id, kind, status, amount_paise, credits)
+     values ($1, $2, $3, $4, 'topup', 'captured', $5, $6)
+     on conflict (provider, provider_payment_id) do nothing`,
+    [event.workspaceId, event.provider, event.providerPaymentId, event.providerOrderId, event.amountPaise, event.credits],
+  );
+  return addCredits(event.workspaceId, event.credits, {
+    kind: 'purchase',
+    reference: `payment:${event.providerPaymentId}`,
+    idempotencyKey: `${event.provider}:topup:${event.providerPaymentId}`,
+    note: 'Credit top-up',
+  });
+}
+
+// Checkout success callback for a top-up. Trusts nothing from the browser except the IDs and
+// signature: the credits and workspace come from the order we created on the server.
+export async function confirmCheckoutTopup(provider, { workspaceId, orderId, paymentId, signature }) {
+  if (!orderId || !paymentId || !provider.verifyOrderPayment({ orderId, paymentId, signature })) {
+    throw new PaymentError(`We couldn’t verify this payment${paymentId ? ` (${paymentId})` : ''}. If you were charged, contact support with that payment ID.`);
+  }
+  const order = await provider.fetchOrder(orderId);
+  if (order.notes?.workspace_id !== workspaceId) throw new PaymentError('This payment was started from a different workspace.');
+  return recordTopupPaid({
+    provider: provider.name,
+    workspaceId,
+    providerPaymentId: paymentId,
+    providerOrderId: orderId,
+    amountPaise: Number(order.amount),
+    credits: Number(order.notes?.credits),
+  });
+}
+
+// Which checkout the billing page can offer: Razorpay when its keys are set, a simulated
+// payment in development, nothing otherwise.
+export function checkoutMode() {
+  const provider = process.env.PAYMENT_PROVIDER || 'fake';
+  if (provider === 'razorpay') {
+    const key = process.env.RAZORPAY_KEY_ID ?? '';
+    return key && process.env.RAZORPAY_KEY_SECRET ? { provider, test: key.startsWith('rzp_test_') } : { provider: null };
+  }
+  return process.env.NODE_ENV === 'production' ? { provider: null } : { provider: 'fake', test: true };
+}
+
+export async function listPayments(workspaceId) {
+  const { rows } = await pool.query(
+    `select id, kind, status, amount_paise, credits, provider, provider_payment_id, invoice_number, created_at
+       from payments where workspace_id = $1 order by created_at desc limit 50`,
+    [workspaceId],
+  );
+  return rows;
+}
+
 async function setSubscriptionStatus(event, status) {
   await pool.query(
     `update subscriptions
@@ -120,21 +179,8 @@ async function applyEvent(event) {
       });
     }
 
-    case 'topup.paid': {
-      if (!event.workspaceId || !(event.credits > 0)) throw new Error('Top-up event is missing its workspace or credits');
-      await pool.query(
-        `insert into payments (workspace_id, provider, provider_payment_id, provider_order_id, kind, status, amount_paise, credits)
-         values ($1, $2, $3, $4, 'topup', 'captured', $5, $6)
-         on conflict (provider, provider_payment_id) do nothing`,
-        [event.workspaceId, event.provider, event.providerPaymentId, event.providerOrderId, event.amountPaise, event.credits],
-      );
-      return addCredits(event.workspaceId, event.credits, {
-        kind: 'purchase',
-        reference: `payment:${event.providerPaymentId}`,
-        idempotencyKey: `${event.provider}:topup:${event.providerPaymentId}`,
-        note: 'Credit top-up',
-      });
-    }
+    case 'topup.paid':
+      return recordTopupPaid(event);
 
     case 'payment.failed':
       if (!event.workspaceId || !event.providerPaymentId) return;

@@ -70,6 +70,12 @@ export function razorpayProvider() {
       return { providerOrderId: order.id, checkout: { key: process.env.RAZORPAY_KEY_ID, order_id: order.id, amount: amountPaise, currency: 'INR' } };
     },
 
+    fetchOrder(orderId) {
+      return client.orders.fetch(orderId);
+    },
+
+    verifyOrderPayment,
+
     // X-Razorpay-Signature is HMAC-SHA256 of the raw body, keyed with the webhook secret
     // set in the Dashboard (not the API key secret).
     verifyWebhook(rawBody, headers) {

@@ -10,6 +10,7 @@
     "start": "next start",
     "migrate": "node scripts/migrate.js",
     "test:billing": "node scripts/test-billing.js",
+    "test:product": "node scripts/test-product.js",
     "import:dryrun": "node scripts/import-dryrun.js"
   },
   "keywords": [],

@@ -118,6 +118,21 @@ export async function releaseExpired() {
   return rowCount;
 }
 
+// Recent ledger entries and open holds, newest first, for the billing page.
+export async function listLedger(workspaceId, limit = 50) {
+  const { rows } = await pool.query(
+    `select 'entry' as type, kind::text, amount, action, reference, note, created_at
+       from credit_entries where workspace_id = $1
+     union all
+     select 'hold', status::text, -credits, 'report', reference, null, created_at
+       from credit_reservations where workspace_id = $1 and status = 'held'
+     order by created_at desc
+     limit $2`,
+    [workspaceId, limit],
+  );
+  return rows;
+}
+
 // Which low-balance warning (if any) a spend just crossed, relative to the plan's monthly allowance.
 export function crossedWarning(before, after, allowance, shares = [0.2, 0.05]) {
   if (!(allowance > 0)) return null;

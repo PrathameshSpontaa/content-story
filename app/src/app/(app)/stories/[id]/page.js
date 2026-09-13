@@ -1,9 +1,12 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { cache } from 'react';
-import { HEAT_HELP, PLATFORM_NAMES as P, dayRange, fmtNum, fmtTime, plural, stripCites } from '../../../../lib/format.js';
-import { MIN_COMMENTS_FOR_PCT, getStory } from '../../../../lib/stories.js';
-import OpenSourcesOnCite from '../../components/open-sources.js';
+import { HEAT_HELP, PLATFORM_NAMES as P, dayRange, fmtNum, fmtTime, plural, stripCites } from '../../../../../lib/format.js';
+import { requireSession } from '../../../../../lib/session.js';
+import { MIN_COMMENTS_FOR_PCT, getStory, getStoryContext } from '../../../../../lib/stories.js';
+import CopyButton from '../../../components/copy-button.js';
+import OpenSourcesOnCite from '../../../components/open-sources.js';
+import { toggleSaveAction } from '../../actions.js';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,8 +42,9 @@ function makeCiter() {
 
 export default async function StoryPage({ params }) {
   const { id } = await params;
-  const story = await loadStory(id);
+  const [story, session] = await Promise.all([loadStory(id), requireSession()]);
   if (!story) notFound();
+  const context = await getStoryContext(story.id, session.workspace.id);
 
   const { narrative, stats, written, platform_takes: lens, feed_edit: edit, checks, sources, platforms } = story;
   const angles = narrative.angles ?? [];
@@ -48,6 +52,16 @@ export default async function StoryPage({ params }) {
   const cite = makeCiter();
   const describe = (sourceId) => sources[sourceId] ?? { who: `Unknown source ${sourceId}`, url: null, text: '' };
   const headline = edit?.headline ?? written.headline;
+  const summaryText = [
+    headline,
+    edit?.dek,
+    '',
+    ...(edit?.platform_strip ?? []).map((s) => `${P[s.platform] ?? s.platform}: ${s.gist}`),
+    '',
+    'Full story with every source: {url}',
+  ]
+    .filter((line) => line !== undefined && line !== null)
+    .join('\n');
 
   // The story, in our words
   const sentences = (written.narrative ?? []).map((s, i) => (
@@ -275,7 +289,7 @@ export default async function StoryPage({ params }) {
   return (
     <main>
       <p className="eyebrow" style={{ marginBottom: 12 }}>
-        <Link href="/">← This week’s stories</Link>
+        <Link href="/feed">← This week’s stories</Link>
       </p>
       <article className="page">
         <header className="hero">
@@ -300,6 +314,17 @@ export default async function StoryPage({ params }) {
               ))}
             </ul>
           ) : null}
+          <div className="hero-actions">
+            <form action={toggleSaveAction}>
+              <input type="hidden" name="storyId" value={story.id} />
+              <button type="submit" className={`btn sm ${context.saved ? 'primary' : 'ghost'}`} aria-pressed={context.saved}>
+                {context.saved ? 'Saved' : 'Save story'}
+              </button>
+            </form>
+            <CopyButton label="Copy link" doneLabel="Link copied" />
+            <CopyButton text={summaryText} label="Copy summary" doneLabel="Summary copied" />
+            {context.tracked.length ? <span className="tracked">On your watchlist: {context.tracked.join(', ')}</span> : null}
+          </div>
         </header>
 
         <div className="body">

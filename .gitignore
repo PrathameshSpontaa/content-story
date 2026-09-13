@@ -10,3 +10,6 @@ dryrun/data/
 dryrun/data-gemini/
 dryrun/out/
 dryrun/out-gemini/
+
+# Local-only settings (dev preview sign-in, admin emails) never leave this machine.
+.env*.local
