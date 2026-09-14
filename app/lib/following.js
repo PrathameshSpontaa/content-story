@@ -29,7 +29,7 @@ const byPlatform = (a, b) => PLATFORM_ORDER.indexOf(a.platform) - PLATFORM_ORDER
 const lower = (names) => names.map((n) => String(n).toLowerCase());
 
 export const EMPTY_STATS = Object.freeze({ posts: 0, interactions: 0, views: null, change: null, daily: [0, 0, 0, 0, 0, 0, 0], channels: [], storyCount: 0, stories: [] });
-const EMPTY_KEYWORD = Object.freeze({ mentions: 0, change: null, daily: [0, 0, 0, 0, 0, 0, 0], storyCount: 0, stories: [] });
+const EMPTY_KEYWORD = Object.freeze({ mentions: 0, change: null, daily: [0, 0, 0, 0, 0, 0, 0], channels: [], storyCount: 0, stories: [] });
 
 export async function getWeek() {
   const { rows } = await pool.query(`with ${BOUNDS} select week_end from bounds`);
@@ -141,41 +141,77 @@ function withChannels(stats, platforms) {
 export async function getKeywordStats(names) {
   const words = [...new Map(names.map((n) => String(n).trim()).filter(Boolean).map((n) => [n.toLowerCase(), n])).values()];
   if (!words.length) return new Map();
+  const POST_TEXT = `(p.text || ' ' || p.transcript)`;
   const [stories, mentions] = await Promise.all([
+    // Newest first, with the platforms whose posts in the story mention the word.
     pool.query(
-      `select w.name, s.id, ${HEADLINE} as headline
+      `select w.name, s.id, ${HEADLINE} as headline, v.feed_edit ->> 'dek' as dek, s.category, s.heat, s.first_post_at, s.last_post_at,
+              array(select distinct p.platform::text from story_posts sp join posts p on p.id = sp.post_id
+                     where sp.story_id = s.id and ${matchesWord(POST_TEXT, 'w.name')}) as platforms
          from unnest($1::text[]) as w(name)
          join stories s on ${LIVE_STORY}
          ${SHARED_FEED}
          ${LATEST_PASSED}
         where ${matchesWord(STORY_TEXT, 'w.name')}
-        order by s.heat desc nulls last`,
+        order by s.last_post_at desc nulls last, s.heat desc nulls last`,
       [words],
     ),
     pool.query(
       `with ${BOUNDS}
-       select w.name, p.published_at > b.week_end - interval '7 days' as this_week, ${DAYS_AGO} as days_ago, count(*)::int as posts
+       select w.name, p.platform, p.published_at > b.week_end - interval '7 days' as this_week, ${DAYS_AGO} as days_ago, count(*)::int as posts
          from unnest($1::text[]) as w(name)
          cross join bounds b
          join posts p on p.published_at > b.week_end - interval '14 days'
-        where ${matchesWord(`(p.text || ' ' || p.transcript)`, 'w.name')}
-        group by 1, 2, 3`,
+        where ${matchesWord(POST_TEXT, 'w.name')}
+        group by 1, 2, 3, 4`,
       [words],
     ),
   ]);
-  const acc = new Map(words.map((w) => [w.toLowerCase(), { mentions: 0, before: 0, daily: [0, 0, 0, 0, 0, 0, 0], stories: [] }]));
-  for (const r of stories.rows) acc.get(r.name.toLowerCase())?.stories.push({ id: r.id, headline: r.headline });
+  const iso = (d) => (d instanceof Date ? d.toISOString() : d);
+  const acc = new Map(words.map((w) => [w.toLowerCase(), { mentions: 0, before: 0, daily: [0, 0, 0, 0, 0, 0, 0], channels: new Map(), stories: [] }]));
+  for (const r of stories.rows) {
+    acc.get(r.name.toLowerCase())?.stories.push({
+      id: r.id,
+      headline: r.headline,
+      dek: r.dek,
+      category: r.category,
+      heat: r.heat,
+      first_post_at: iso(r.first_post_at),
+      last_post_at: iso(r.last_post_at),
+      platforms: (r.platforms ?? []).sort((a, b) => PLATFORM_ORDER.indexOf(a) - PLATFORM_ORDER.indexOf(b)),
+    });
+  }
   for (const r of mentions.rows) {
     const e = acc.get(r.name.toLowerCase());
     if (!e) continue;
+    if (!e.channels.has(r.platform)) e.channels.set(r.platform, { platform: r.platform, posts: 0, before: 0 });
+    const ch = e.channels.get(r.platform);
     if (r.this_week) {
       e.mentions += r.posts;
+      ch.posts += r.posts;
       e.daily[dayIndex(r.days_ago)] += r.posts;
     } else {
       e.before += r.posts;
+      ch.before += r.posts;
     }
   }
-  return new Map([...acc].map(([key, e]) => [key, { mentions: e.mentions, change: change(e.mentions, e.before), daily: e.daily, storyCount: e.stories.length, stories: e.stories.slice(0, 3) }]));
+  return new Map(
+    [...acc].map(([key, e]) => [
+      key,
+      {
+        mentions: e.mentions,
+        change: change(e.mentions, e.before),
+        daily: e.daily,
+        // Platforms whose posts mention it: this week's count, and the change from the week before.
+        channels: [...e.channels.values()]
+          .filter((c) => c.posts || c.before)
+          .sort(byPlatform)
+          .map((c) => ({ platform: c.platform, posts: c.posts, change: change(c.posts, c.before) })),
+        storyCount: e.stories.length,
+        stories: e.stories.slice(0, 8),
+      },
+    ]),
+  );
 }
 
 // ─── The page ──────────────────────────────────────────────────────────────
@@ -273,7 +309,16 @@ export async function getFollowing(workspaceId) {
       stats: withChannels(sourceStats.get(c.name.toLowerCase()), ['reddit']),
     })),
   ];
-  const keywords = topics.map((t) => ({ key: `keyword:${t.name.toLowerCase()}`, kind: 'keyword', name: t.name, follow: followState(t), stats: keywordStats.get(t.name.toLowerCase()) ?? EMPTY_KEYWORD }));
+  const keywords = topics.map((t) => ({
+    key: `keyword:${t.name.toLowerCase()}`,
+    kind: 'keyword',
+    name: t.name,
+    handles: [],
+    photo: null,
+    collected: true,
+    follow: followState(t),
+    stats: keywordStats.get(t.name.toLowerCase()) ?? EMPTY_KEYWORD,
+  }));
   return { week, totalStories, sources, keywords };
 }
 

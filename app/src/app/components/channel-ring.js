@@ -36,7 +36,14 @@ export default function ChannelRing({ name, kind = 'creator', photo, handles = [
   const byHandle = new Map(handles.map((h) => [h.platform, h]));
   const byStats = new Map(channels.map((c) => [c.platform, c]));
   const platforms = [...new Set([...byHandle.keys(), ...byStats.keys()])].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
-  if (!platforms.length) return <Face name={name} kind={kind} photo={photo} size={size} />;
+  // Nothing to slice yet (a brand nobody mentioned): the face alone, at the ring's size so rows line up.
+  if (!platforms.length) {
+    return (
+      <span className={`ring ${size}`}>
+        <Face name={name} kind={kind} photo={photo} size={size} />
+      </span>
+    );
+  }
 
   const slices = platforms.map((platform) => {
     const stats = byStats.get(platform);
@@ -96,7 +103,9 @@ export default function ChannelRing({ name, kind = 'creator', photo, handles = [
                 </span>
                 {collected && s.stats ? (
                   <span className="ring-n">
-                    {s.quiet ? 'Quiet this week' : `${s.stats.posts.toLocaleString('en-IN')} ${postsWord(s.platform, s.stats.posts)} · ${compact(s.stats.interactions)} interactions`}
+                    {s.quiet
+                      ? 'Quiet this week'
+                      : `${s.stats.posts.toLocaleString('en-IN')} ${postsWord(s.platform, s.stats.posts)}${s.stats.interactions == null ? ' mention it' : ` · ${compact(s.stats.interactions)} interactions`}`}
                   </span>
                 ) : null}
               </li>

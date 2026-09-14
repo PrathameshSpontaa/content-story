@@ -2,10 +2,9 @@
 
 import Link from 'next/link';
 import { useEffect, useRef, useState, useTransition } from 'react';
-import { plural } from '../../../../lib/format.js';
+import { PLATFORM_NAMES, plural } from '../../../../lib/format.js';
 import ChannelRing from '../../components/channel-ring.js';
 import CreatorFinder from '../../components/creator-finder.js';
-import Face from '../../components/face.js';
 import Icon from '../../components/icons.js';
 import PlatformMark from '../../components/platform-mark.js';
 import { Change, Sparkline, compact } from '../../components/source-numbers.js';
@@ -16,6 +15,7 @@ const TABS = [
   { id: 'all', label: 'All' },
   { id: 'creator', label: 'Creators' },
   { id: 'community', label: 'Subreddits' },
+  { id: 'keyword', label: 'Brands & topics' },
   { id: 'quiet', label: 'Quiet' },
 ];
 const COLUMNS = [
@@ -28,7 +28,7 @@ const COLUMNS = [
 const SORT_VALUE = {
   name: (s) => s.name.toLowerCase(),
   stories: (s) => s.stats.storyCount,
-  interactions: (s) => s.stats.interactions,
+  interactions: (s) => s.stats.interactions ?? s.stats.mentions ?? 0,
   views: (s) => s.stats.views ?? -1,
   change: (s) => s.stats.change ?? -Infinity,
 };
@@ -60,6 +60,7 @@ function Breakdown({ item }) {
     );
   }
   const reddit = item.kind === 'community';
+  const keyword = item.kind === 'keyword';
   const where = (platform) => {
     const handle = item.handles.find((h) => h.platform === platform);
     return handle ? { label: handle.handle, url: handle.url } : { label: item.name, url: `https://www.reddit.com/${item.name}/` };
@@ -67,46 +68,90 @@ function Breakdown({ item }) {
   return (
     <div className="expand">
       <div className="tablewrap">
-        <table className="ctable">
-          <thead>
-            <tr>
-              <th scope="col">Channel</th>
-              <th scope="col">{reddit ? 'Threads' : 'Posts'}</th>
-              <th scope="col">{reddit ? 'Upvotes and comments' : 'Interactions'}</th>
-              <th scope="col">Views</th>
-              <th scope="col">vs last week</th>
-            </tr>
-          </thead>
-          <tbody>
-            {stats.channels.map((c) => (
-              <tr key={c.platform}>
-                <td>
-                  <span className="ch">
-                    <PlatformMark platform={c.platform} size="xs" />
-                    <a href={where(c.platform).url} target="_blank" rel="noopener noreferrer">
-                      {where(c.platform).label}
-                    </a>
-                  </span>
-                </td>
-                <td>{c.posts.toLocaleString('en-IN')}</td>
-                <td>{compact(c.interactions)}</td>
-                <td>{compact(c.views)}</td>
-                <td>{c.change == null ? '—' : <Change value={c.change} />}</td>
-              </tr>
-            ))}
-          </tbody>
-          {stats.channels.length > 1 ? (
-            <tfoot>
+        {keyword ? (
+          // Where the word came up: posts on each platform that mention it, this week and the week before.
+          <table className="ctable">
+            <thead>
               <tr>
-                <td>All channels</td>
-                <td>{stats.posts.toLocaleString('en-IN')}</td>
-                <td>{compact(stats.interactions)}</td>
-                <td>{compact(stats.views)}</td>
-                <td>{stats.change == null ? '—' : <Change value={stats.change} />}</td>
+                <th scope="col">Platform</th>
+                <th scope="col">Posts mentioning it</th>
+                <th scope="col">vs last week</th>
               </tr>
-            </tfoot>
-          ) : null}
-        </table>
+            </thead>
+            <tbody>
+              {stats.channels.length ? (
+                stats.channels.map((c) => (
+                  <tr key={c.platform}>
+                    <td>
+                      <span className="ch">
+                        <PlatformMark platform={c.platform} size="xs" />
+                        {PLATFORM_NAMES[c.platform] ?? c.platform}
+                      </span>
+                    </td>
+                    <td>{c.posts.toLocaleString('en-IN')}</td>
+                    <td>{c.change == null ? '—' : <Change value={c.change} />}</td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={3} className="none">
+                    No posts mention “{item.name}” in the last two weeks.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+            {stats.channels.length > 1 ? (
+              <tfoot>
+                <tr>
+                  <td>All platforms</td>
+                  <td>{stats.mentions.toLocaleString('en-IN')}</td>
+                  <td>{stats.change == null ? '—' : <Change value={stats.change} />}</td>
+                </tr>
+              </tfoot>
+            ) : null}
+          </table>
+        ) : (
+          <table className="ctable">
+            <thead>
+              <tr>
+                <th scope="col">Channel</th>
+                <th scope="col">{reddit ? 'Threads' : 'Posts'}</th>
+                <th scope="col">{reddit ? 'Upvotes and comments' : 'Interactions'}</th>
+                <th scope="col">Views</th>
+                <th scope="col">vs last week</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.channels.map((c) => (
+                <tr key={c.platform}>
+                  <td>
+                    <span className="ch">
+                      <PlatformMark platform={c.platform} size="xs" />
+                      <a href={where(c.platform).url} target="_blank" rel="noopener noreferrer">
+                        {where(c.platform).label}
+                      </a>
+                    </span>
+                  </td>
+                  <td>{c.posts.toLocaleString('en-IN')}</td>
+                  <td>{compact(c.interactions)}</td>
+                  <td>{compact(c.views)}</td>
+                  <td>{c.change == null ? '—' : <Change value={c.change} />}</td>
+                </tr>
+              ))}
+            </tbody>
+            {stats.channels.length > 1 ? (
+              <tfoot>
+                <tr>
+                  <td>All channels</td>
+                  <td>{stats.posts.toLocaleString('en-IN')}</td>
+                  <td>{compact(stats.interactions)}</td>
+                  <td>{compact(stats.views)}</td>
+                  <td>{stats.change == null ? '—' : <Change value={stats.change} />}</td>
+                </tr>
+              </tfoot>
+            ) : null}
+          </table>
+        )}
       </div>
       <div className="exp-side">
         {stats.stories.length ? (
@@ -122,7 +167,11 @@ function Breakdown({ item }) {
             All {stats.storyCount} stories
           </Link>
         ) : null}
-        <p className="exp-note">Interactions are likes, comments and shares on posts from these 7 days. “vs last week” is blank until an earlier week has been collected.</p>
+        <p className="exp-note">
+          {keyword
+            ? `A post or story counts when it uses “${item.name}” as a whole word, on any platform. “vs last week” is blank until an earlier week has been collected.`
+            : 'Interactions are likes, comments and shares on posts from these 7 days. “vs last week” is blank until an earlier week has been collected.'}
+        </p>
       </div>
     </div>
   );
@@ -217,9 +266,8 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
     });
   }
 
-  function showQuiet(group) {
+  function showQuiet() {
     setLimit(null);
-    if (group === 'keyword') return document.getElementById('h-brands')?.scrollIntoView({ block: 'start' });
     setTab('quiet');
     listHeading.current?.scrollIntoView({ block: 'start' });
   }
@@ -234,11 +282,13 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
 
   const sortBy = (key) => setSort((s) => (s.key === key ? { key, dir: s.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: key === 'name' ? 'asc' : 'desc' }));
 
-  const mine = sources.filter((s) => s.follow);
+  // Everything followed or paused, whatever its kind, is one list.
+  const mine = [...sources, ...keywords].filter((s) => s.follow);
   const counts = {
     all: mine.length,
     creator: mine.filter((s) => s.kind === 'creator').length,
     community: mine.filter((s) => s.kind === 'community').length,
+    keyword: mine.filter((s) => s.kind === 'keyword').length,
     quiet: mine.filter(isQuiet).length,
   };
   const inTab = mine.filter((s) => (tab === 'all' ? true : tab === 'quiet' ? isQuiet(s) : s.kind === tab));
@@ -253,7 +303,6 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
   const waiting = inTab.filter((s) => s.follow.active && !s.collected);
   const paused = inTab.filter((s) => s.follow.paused);
   const suggested = sources.filter((s) => !s.follow && s.collected).sort(bySignal);
-  const myKeywords = keywords.filter((k) => k.follow).sort(bySignal);
   const suggestedKeywords = keywords.filter((k) => !k.follow && k.stats.storyCount > 0).sort(bySignal);
 
   const followMenu = (item) => {
@@ -311,7 +360,7 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
                   <b>{s.name}</b>
                 </span>
                 <span className="rt-meta">
-                  <span>{s.kind === 'community' ? 'Subreddit' : s.handles[0]?.handle}</span>
+                  <span>{s.kind === 'community' ? 'Subreddit' : s.kind === 'keyword' ? 'Brand or topic · whole word, any platform' : s.handles[0]?.handle}</span>
                   {s.follow.paused ? (
                     <span className="chip paused">Paused · not using a slot</span>
                   ) : !s.collected ? (
@@ -321,7 +370,7 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
                   ) : null}
                   {s.collected ? (
                     <span className="m-only">
-                      {plural(s.stats.storyCount, 'story', 'stories')} · {compact(s.stats.interactions)} interactions
+                      {plural(s.stats.storyCount, 'story', 'stories')} · {s.kind === 'keyword' ? plural(s.stats.mentions, 'mention') : `${compact(s.stats.interactions)} interactions`}
                     </span>
                   ) : null}
                 </span>
@@ -331,12 +380,22 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
           <span className={`cell col-stories${s.stats.storyCount ? '' : ' none'}`}>
             {!s.collected ? '—' : s.stats.storyCount ? <Link href={`/stories?follow=${s.follow.id}`}>{s.stats.storyCount}</Link> : '0'}
           </span>
-          <span className={`cell col-inter${s.collected ? '' : ' none'}`}>{s.collected ? compact(s.stats.interactions) : '—'}</span>
+          <span className={`cell col-inter${s.collected ? '' : ' none'}`}>
+            {!s.collected ? (
+              '—'
+            ) : s.kind === 'keyword' ? (
+              <>
+                {compact(s.stats.mentions)} <small className="unit">mentions</small>
+              </>
+            ) : (
+              compact(s.stats.interactions)
+            )}
+          </span>
           <span className={`cell col-views${s.stats.views == null ? ' none' : ''}`}>{compact(s.stats.views)}</span>
           <span className="cell col-trend">
             {s.collected ? (
               <>
-                <Sparkline values={s.stats.daily} label={`Interactions each day for ${s.name}, last 7 days`} />
+                <Sparkline values={s.stats.daily} label={s.kind === 'keyword' ? `Posts mentioning ${s.name} each day, last 7 days` : `Interactions each day for ${s.name}, last 7 days`} />
                 <Change value={s.stats.change} />
               </>
             ) : (
@@ -376,35 +435,9 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
     </article>
   );
 
-  const keywordRow = (k) => (
-    <li key={k.key} className={`brow${k.follow.paused ? ' paused' : ''}`}>
-      <Face name={k.name} kind="keyword" size="md" />
-      <div className="rt-body">
-        <b className="brow-name">{k.name}</b>
-        <span className="numbers">
-          <span>
-            <b>{k.stats.mentions.toLocaleString('en-IN')}</b> {k.stats.mentions === 1 ? 'post mentions it' : 'posts mention it'}
-          </span>
-          {k.follow.paused ? (
-            <span className="chip paused">Paused · not using a slot</span>
-          ) : k.stats.storyCount ? (
-            <Link href={`/stories?follow=${k.follow.id}`}>{plural(k.stats.storyCount, 'story', 'stories')} this week</Link>
-          ) : (
-            <span className="chip quiet">No stories this week</span>
-          )}
-        </span>
-      </div>
-      <span className="cell col-trend">
-        <Sparkline values={k.stats.daily} label={`Posts mentioning ${k.name} each day, last 7 days`} />
-        <Change value={k.stats.change} />
-      </span>
-      {followMenu(k)}
-    </li>
-  );
-
   let limitMessage = null;
   if (limit) {
-    const quiet = limit.group === 'keyword' ? myKeywords.filter(isQuiet).length : counts.quiet;
+    const quiet = mine.filter((i) => (i.kind === 'keyword') === (limit.group === 'keyword')).filter(isQuiet).length;
     const includes =
       limit.group === 'keyword' ? plural(plan.maxKeywords, 'brand or topic', 'brands and topics') : plural(plan.maxSources, 'creator or subreddit', 'creators and subreddits');
     limitMessage = (
@@ -421,7 +454,7 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
         </p>
         <div className="limit-actions">
           {quiet ? (
-            <button type="button" className="btn primary sm" onClick={() => showQuiet(limit.group)}>
+            <button type="button" className="btn primary sm" onClick={showQuiet}>
               Show quiet ones
             </button>
           ) : null}
@@ -442,7 +475,7 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
           <h2 id="h-list" ref={listHeading}>
             Your list
           </h2>
-          <p>Creators and subreddits · click a name for each channel</p>
+          <p>Creators, subreddits, brands and topics · click a name for the week’s detail</p>
         </div>
         {mine.length ? (
           <>
@@ -492,7 +525,7 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
             </ul>
           </>
         ) : (
-          <p className="list-empty boxed">You don’t follow any creators or subreddits yet. Search above, or follow a suggestion below.</p>
+          <p className="list-empty boxed">You don’t follow anyone or anything yet. Search above, or follow a suggestion below.</p>
         )}
       </section>
 
@@ -515,17 +548,12 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
 
       <section className="fsection" aria-labelledby="h-brands">
         <div className="fsection-head">
-          <h2 id="h-brands">Brands and topics</h2>
-          <p>Flagged when a story mentions them as a word, on any platform</p>
+          <h2 id="h-brands">Suggested brands and topics</h2>
+          <p>Named in this week’s stories · a follow flags every story that uses the word, on any platform</p>
         </div>
-        {myKeywords.length ? (
-          <ul className="blist">{myKeywords.map(keywordRow)}</ul>
-        ) : (
-          <p className="muted-note">You don’t follow any brands or topics yet. Type your brand or a competitor in the search box above.</p>
-        )}
+        {!counts.keyword ? <p className="muted-note">You don’t follow any brands or topics yet. Type your brand or a competitor in the search box above, or pick one below.</p> : null}
         {suggestedKeywords.length ? (
           <>
-            <h3 className="sublabel">In this week’s stories</h3>
             <div className="suggest">
               {suggestedKeywords.map((k) => (
                 <button key={k.key} type="button" className="suggest-chip" disabled={busy === k.key} title={`Follow ${k.name}`} onClick={(e) => follow(followRef(k), anchorOf(e))}>
@@ -536,7 +564,9 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
               ))}
             </div>
           </>
-        ) : null}
+        ) : (
+          <p className="muted-note">Every brand and topic named in this week’s stories is already in your list.</p>
+        )}
       </section>
 
       {limitMessage}
