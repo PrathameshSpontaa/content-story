@@ -463,16 +463,6 @@ export default function CreatorFinder({ mode = 'follow', pickedIds = [], onPick,
         </div>
         {panel}
       </div>
-      {!q && !composer && !notice ? (
-        <p className="finder-hint">
-          {following
-            ? 'Search a name or paste a profile link from X, YouTube, LinkedIn, Instagram or TikTok. Start with r/ for a subreddit; anything else can be followed as a brand or topic.'
-            : 'Search a name, or paste a link from X, YouTube, LinkedIn, Instagram or TikTok.'}{' '}
-          <button type="button" className="linkbtn" onClick={() => openComposer({})}>
-            Add someone new
-          </button>
-        </p>
-      ) : null}
       {notice ? (
         <p role="status" className={`notice ${notice.ok ? 'ok' : 'err'}`}>
           {notice.text}

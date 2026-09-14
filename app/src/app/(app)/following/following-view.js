@@ -468,7 +468,7 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
 
   return (
     <>
-      <CreatorFinder mode="follow" onToast={(text) => say(text)} onLimit={(anchor, lim) => setLimit({ ...lim, ...anchor })} placeholder="Search a name, paste a profile link, or type r/ or a brand" />
+      <CreatorFinder mode="follow" onToast={(text) => say(text)} onLimit={(anchor, lim) => setLimit({ ...lim, ...anchor })} placeholder="Search a name, paste a profile link, type r/subreddit, or a brand or topic" />
 
       <section className="fsection" aria-labelledby="h-list">
         <div className="fsection-head">
