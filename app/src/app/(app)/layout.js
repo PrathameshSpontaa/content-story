@@ -5,8 +5,8 @@ import { getBalance } from '../../../lib/credits.js';
 import { fmtNum } from '../../../lib/format.js';
 import { clerkConfigured, devPreviewEmail, requireSession } from '../../../lib/session.js';
 import { listFollowing } from '../../../lib/watchlist.js';
-import Avatar from '../components/avatar.js';
 import Brand from '../components/brand-mark.js';
+import Face from '../components/face.js';
 import NavLinks from '../components/nav-links.js';
 import SiteFooter from '../components/site-footer.js';
 
@@ -61,7 +61,7 @@ export default async function AppLayout({ children }) {
               {shown.map((t) => (
                 <li key={t.id}>
                   <Link href={`/stories?follow=${t.id}`} title={`Stories involving ${t.name}`}>
-                    <Avatar name={t.name} kind={t.kind} size="xs" />
+                    <Face name={t.name} kind={t.kind} photo={t.photo} size="xs" />
                     <span>{t.name}</span>
                   </Link>
                 </li>

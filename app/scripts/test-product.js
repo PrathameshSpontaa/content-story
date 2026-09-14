@@ -7,11 +7,13 @@ import { ensureAccount, getPlanState } from '../lib/accounts.js';
 import { getCatalog } from '../lib/catalog.js';
 import { getBalance } from '../lib/credits.js';
 import { pool } from '../lib/db.js';
+import { getFollowing, previewKeyword } from '../lib/following.js';
 import { TRIAL } from '../lib/pricing.js';
 import { ReportError, cancelReport, listReports, requestReport, shiftDate, todayIST, updateReport } from '../lib/reports.js';
 import { getFeed, getFeedCounts, getStoryContext, toggleSaved } from '../lib/stories.js';
 import {
   ExistingCreatorError,
+  LimitError,
   WatchlistError,
   addTopic,
   completeOnboarding,
@@ -21,6 +23,7 @@ import {
   listFollowing,
   listTargets,
   lookupProfile,
+  matchesWord,
   parseHandle,
   removeTarget,
   searchCreators,
@@ -179,12 +182,33 @@ try {
   await check('brands and topics are limited by the plan; unfollowing frees a slot', async () => {
     for (let i = 0; i < TRIAL.maxKeywords; i += 1) await addTopic(ws, { kind: 'keyword', query: `Keyword ${i}`, platforms: ['x', 'youtube'] });
     await assert.rejects(addTopic(ws, { kind: 'keyword', query: 'One too many' }), new RegExp(`includes ${TRIAL.maxKeywords}`));
+    await assert.rejects(addTopic(ws, { kind: 'keyword', query: 'Two too many' }), (err) => err instanceof LimitError && err.group === 'keyword');
     const keyword = (await listTargets(ws)).find((t) => t.kind === 'keyword');
     assert.deepEqual(keyword.platforms, ['x', 'youtube']);
     await setTargetActive(ws, keyword.id, false);
     await addTopic(ws, { kind: 'keyword', query: 'Gemini' });
     await assert.rejects(setTargetActive(ws, keyword.id, true), WatchlistError);
     await removeTarget(ws, keyword.id);
+  });
+
+  await check('brands and topics match whole words, never parts of words', async () => {
+    const matches = async (text, word) => (await pool.query(`select ${matchesWord('$1::text', '$2::text')} as hit`, [text, word])).rows[0].hit;
+    assert.equal(await matches('People said hi over email', 'AI'), false);
+    assert.equal(await matches('New AI video tools', 'AI'), true);
+    assert.equal(await matches('Shipping C++ builds', 'C++'), true);
+    assert.equal(await matches('OpenAI’s launch week', 'openai'), true);
+  });
+
+  await check('the Following page has each source’s week and each follow’s state', async () => {
+    const { sources, keywords, week, totalStories } = await getFollowing(ws);
+    assert.ok(Date.parse(week.end) > Date.parse(week.start) && totalStories > 0);
+    const wolfe = sources.find((s) => s.name === 'Matt Wolfe');
+    assert.ok(wolfe?.follow?.active && wolfe.collected);
+    assert.ok(wolfe.stats.channels.length >= 3 && wolfe.stats.interactions > 0 && wolfe.stats.daily.length === 7);
+    assert.ok(sources.some((s) => s.kind === 'community' && !s.follow && s.stats.posts > 0));
+    assert.ok(keywords.some((k) => k.name === 'Gemini' && k.follow?.active));
+    const preview = await previewKeyword(ws, 'OpenAI');
+    assert.ok(preview.stats.storyCount > 0 && preview.stats.stories[0].headline);
   });
 
   await check('search and platform filters narrow the stories', async () => {

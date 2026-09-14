@@ -17,10 +17,35 @@ export class ExistingCreatorError extends WatchlistError {
   }
 }
 
+// A follow that doesn't fit the plan. `group` is 'source' (creators and subreddits share one
+// limit) or 'keyword' (brands and topics).
+export class LimitError extends WatchlistError {
+  constructor(message, group, limit) {
+    super(message);
+    this.group = group;
+    this.limit = limit;
+  }
+}
+
 export const DAILY_ACTION = { creator: 'track_creator_day', keyword: 'track_keyword_day', community: 'track_community_day' };
 
 // ILIKE pattern that matches the text literally (no user-supplied wildcards).
 export const likeEscaped = (sql) => `'%' || replace(replace(replace(${sql}, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'`;
+
+// The words of a story version `v`: its string values only, so JSON keys never match a keyword.
+export const STORY_TEXT = `(jsonb_path_query_array(v.written, 'strict $.** ? (@.type() == "string")')::text || ' ' || jsonb_path_query_array(v.narrative, 'strict $.** ? (@.type() == "string")')::text)`;
+
+// Case-insensitive whole-word match: "AI" matches "AI video" but not "said" or "email".
+export const matchesWord = (textSql, wordSql) =>
+  `${textSql} ~* ('(^|[^[:alnum:]_])' || regexp_replace(${wordSql}, '([^[:alnum:][:space:]])', '\\\\\\1', 'g') || '($|[^[:alnum:]_])')`;
+
+// A creator's photo as { url, platform }: the first channel, in this order, that gave us one.
+export const creatorPhoto = (creatorIdSql) => `(
+  select json_build_object('url', ph.avatar_url, 'platform', ph.platform)
+    from creator_handles ph
+   where ph.creator_id = ${creatorIdSql} and ph.avatar_url is not null
+   order by array_position(array['x', 'youtube', 'linkedin', 'tiktok', 'instagram']::platform[], ph.platform)
+   limit 1)`;
 
 const LATEST_PASSED = `join lateral (select * from story_versions v where v.story_id = s.id and v.passed order by v.version desc limit 1) v on true`;
 const PLATFORM_ORDER = `array['x', 'youtube', 'linkedin', 'instagram', 'tiktok', 'reddit']::platform[]`;
@@ -41,7 +66,7 @@ export async function listTargets(workspaceId) {
             case t.kind
               when 'keyword' then (select count(*) from stories s ${LATEST_PASSED}
                                     where s.published_at is not null
-                                      and (v.written::text || v.narrative::text) ilike ${likeEscaped('t.query')})
+                                      and ${matchesWord(STORY_TEXT, 't.query')})
               else (select count(distinct sp.story_id)
                       from story_posts sp
                       join stories s on s.id = sp.story_id and s.published_at is not null
@@ -73,8 +98,29 @@ async function assertRoom(client, workspaceId, kind, plan) {
   const limit = isKeyword ? plan.maxKeywords : plan.maxSources;
   if (rows[0].n >= limit) {
     const what = isKeyword ? (limit === 1 ? 'brand or topic' : 'brands and topics') : limit === 1 ? 'creator or subreddit' : 'creators and subreddits';
-    throw new WatchlistError(`${plan.name} includes ${limit} ${what}. Unfollow one to add another.`);
+    throw new LimitError(`${plan.name} includes ${limit} ${what}. Unfollow one to add another.`, isKeyword ? 'keyword' : 'source', limit);
   }
+}
+
+// How many of a plan's creator-and-subreddit (or brand-and-topic) slots are in use.
+export async function slotUsage(workspaceId, kind) {
+  const isKeyword = kind === 'keyword';
+  const [plan, { rows }] = await Promise.all([
+    getPlanState(workspaceId),
+    pool.query(`select count(*)::int as n from tracking_targets where workspace_id = $1 and active and (kind = 'keyword') = $2`, [workspaceId, isKeyword]),
+  ]);
+  return { used: rows[0].n, limit: isKeyword ? plan.maxKeywords : plan.maxSources, planName: plan.name };
+}
+
+export async function getTarget(workspaceId, targetId) {
+  if (!UUID.test(String(targetId))) return null;
+  const { rows } = await pool.query(
+    `select t.id, t.kind, t.creator_id, t.query, t.active, coalesce(c.name, t.query) as name
+       from tracking_targets t left join creators c on c.id = t.creator_id
+      where t.id = $1 and t.workspace_id = $2`,
+    [targetId, workspaceId],
+  );
+  return rows[0] ?? null;
 }
 
 // Following again after unfollowing (or an automatic pause) reactivates the same row.
@@ -117,7 +163,8 @@ const creatorSummary = (where) => `
     select c.id, c.name,
            json_agg(json_build_object('platform', h.platform, 'handle', h.handle, 'url', h.url) order by array_position(${PLATFORM_ORDER}, h.platform)) as handles,
            bool_or(h.verified) as verified,
-           (select count(*) from posts p join creator_handles ph on ph.id = p.handle_id where ph.creator_id = c.id)::int as posts,
+           ${creatorPhoto('c.id')} as photo,
+           (select count(*) from posts p join creator_handles ch on ch.id = p.handle_id where ch.creator_id = c.id)::int as posts,
            array(select distinct sp.story_id
                    from story_posts sp
                    join stories s on s.id = sp.story_id and s.published_at is not null and s.status not in ('merged', 'rejected')
@@ -289,7 +336,7 @@ export async function completeOnboarding(workspaceId, { useCase, creatorIds, com
 // The short list for the sidebar and the stories filter.
 export async function listFollowing(workspaceId) {
   const { rows } = await pool.query(
-    `select t.id, t.kind, coalesce(c.name, t.query) as name
+    `select t.id, t.kind, coalesce(c.name, t.query) as name, ${creatorPhoto('t.creator_id')} as photo
        from tracking_targets t left join creators c on c.id = t.creator_id
       where t.workspace_id = $1 and t.active
       order by case t.kind when 'creator' then 0 when 'community' then 1 else 2 end, lower(coalesce(c.name, t.query))`,

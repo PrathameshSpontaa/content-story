@@ -2,6 +2,7 @@
 // Following page offer these as one-tap follows, each with the stories it would bring in.
 import { pool } from './db.js';
 import { PLATFORM_NAMES } from './format.js';
+import { STORY_TEXT, matchesWord } from './watchlist.js';
 
 export const USE_CASES = [
   { id: 'brand', label: 'Brand or marketing team', text: 'See how creators and their audiences talk about your brand, launches and competitors.' },
@@ -78,7 +79,7 @@ export async function listCatalogTopics(workspaceId, limit = 12) {
             array(select s.id from stories s
                     join lateral (select * from story_versions v where v.story_id = s.id and v.passed order by v.version desc limit 1) v on true
                    where s.published_at is not null and s.status not in ('merged', 'rejected')
-                     and (v.written::text || v.narrative::text) ilike '%' || replace(replace(replace(tp.name, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%') as story_ids,
+                     and ${matchesWord(STORY_TEXT, 'tp.name')}) as story_ids,
             (select t.id from tracking_targets t where t.workspace_id = $1 and t.kind = 'keyword' and t.active and lower(t.query) = lower(tp.name)) as target_id
        from topics tp
       order by tp.weight desc, tp.name`,

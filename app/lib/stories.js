@@ -1,7 +1,7 @@
 // Story data for the web app, read from Postgres. Pages never write SQL themselves.
 import { pool } from './db.js';
 import { PLATFORM_NAMES, plural, truncate } from './format.js';
-import { likeEscaped } from './watchlist.js';
+import { STORY_TEXT, likeEscaped, matchesWord } from './watchlist.js';
 
 // A story leads the feed only if independent sources covered it and people reacted.
 export const TOP = { minSources: 2, minComments: 10 };
@@ -28,7 +28,7 @@ const TARGET_MATCHES_STORY = `(
   or (t.kind = 'community' and exists (
      select 1 from story_posts sp join posts po on po.id = sp.post_id
       where sp.story_id = s.id and lower(po.community) = lower(t.query)))
-  or (t.kind = 'keyword' and (v.written::text || v.narrative::text) ilike ${likeEscaped('t.query')})
+  or (t.kind = 'keyword' and ${matchesWord(STORY_TEXT, 't.query')})
 )`;
 
 export function whyNotTop({ sources, creators, audience }) {

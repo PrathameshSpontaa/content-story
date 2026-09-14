@@ -11,7 +11,8 @@
     "migrate": "node scripts/migrate.js",
     "test:billing": "node scripts/test-billing.js",
     "test:product": "node scripts/test-product.js",
-    "import:dryrun": "node scripts/import-dryrun.js"
+    "import:dryrun": "node scripts/import-dryrun.js",
+    "backfill:avatars": "node scripts/backfill-avatars.js"
   },
   "keywords": [],
   "author": "",

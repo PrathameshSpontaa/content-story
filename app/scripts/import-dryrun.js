@@ -7,6 +7,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pool } from '../lib/db.js';
+import { handleFor, readAvatars } from './dryrun-profiles.js';
 
 const DRYRUN = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'dryrun');
 const DATA = join(DRYRUN, 'data');
@@ -26,10 +27,7 @@ const groupFiles = readDir('groups');
 const { stories } = read('stories.json');
 const collectedAt = read('raw', 'meta.json').collected_at;
 const now = new Date().toISOString();
-
-const liSlug = (url) => (String(url ?? '').match(/linkedin\.com\/in\/([^/?#]+)/i)?.[1] ?? '').toLowerCase();
-const handleFor = (platform, account) =>
-  platform === 'linkedin' ? liSlug(account.url) : platform === 'youtube' ? account.handle : `@${String(account.handle).replace(/^@/, '')}`;
+const avatars = readAvatars(DATA, posts);
 
 // Inserts many rows in one statement; the JSON keys must match the table's columns.
 async function insertRows(client, table, rows, conflict = 'do nothing') {
@@ -55,11 +53,11 @@ try {
     creatorIds.set(c.id, creatorId);
     for (const [platform, account] of Object.entries(c.handles)) {
       const { rows } = await client.query(
-        `insert into creator_handles (creator_id, platform, handle, url, verified)
-         values ($1, $2, $3, $4, true)
-         on conflict (platform, (lower(handle))) do update set url = excluded.url
+        `insert into creator_handles (creator_id, platform, handle, url, verified, avatar_url)
+         values ($1, $2, $3, $4, true, $5)
+         on conflict (platform, (lower(handle))) do update set url = excluded.url, avatar_url = coalesce(excluded.avatar_url, creator_handles.avatar_url)
          returning id`,
-        [creatorId, platform, handleFor(platform, account), account.url],
+        [creatorId, platform, handleFor(platform, account), account.url, avatars.get(`${c.id}|${platform}`) ?? null],
       );
       handleIds.set(`${c.id}|${platform}`, rows[0].id);
     }

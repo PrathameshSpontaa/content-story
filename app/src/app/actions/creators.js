@@ -2,12 +2,26 @@
 
 import { revalidatePath } from 'next/cache';
 import { requireSession } from '../../../lib/session.js';
-import { ExistingCreatorError, WatchlistError, createCreator, followCreator, getCreatorSummary, unfollowCreator } from '../../../lib/watchlist.js';
+import { ExistingCreatorError, LimitError, WatchlistError, addTopic, createCreator, followCreator, getCreatorSummary, slotUsage } from '../../../lib/watchlist.js';
 
 const OOPS = 'Something went wrong on our side. Try again in a minute.';
 
 // The sidebar lists who you follow, so changes refresh the whole app layout.
 const refresh = () => revalidatePath('/', 'layout');
+
+// A refused follow says which limit it hit, so the page can explain it next to the button.
+function failure(err) {
+  if (err instanceof LimitError) return { error: err.message, limit: { group: err.group, max: err.limit } };
+  if (err instanceof ExistingCreatorError) return { error: err.message, existing: err.creator };
+  if (err instanceof WatchlistError) return { error: err.message };
+  console.error(err);
+  return { error: OOPS };
+}
+
+async function tookLastSlot(workspaceId, kind) {
+  const { used, limit } = await slotUsage(workspaceId, kind);
+  return used >= limit;
+}
 
 // follow: false adds the creator without following them (onboarding saves picks at the end).
 export async function createCreatorAction(input) {
@@ -18,13 +32,11 @@ export async function createCreatorAction(input) {
     : [];
   try {
     const creator = await createCreator(session.workspace.id, { name: String(input?.name ?? ''), profiles, follow });
-    if (follow) refresh();
-    return { creator };
+    if (!follow) return { creator };
+    refresh();
+    return { creator, lastSlot: await tookLastSlot(session.workspace.id, 'creator') };
   } catch (err) {
-    if (err instanceof ExistingCreatorError) return { error: err.message, existing: err.creator };
-    if (err instanceof WatchlistError) return { error: err.message };
-    console.error(err);
-    return { error: OOPS };
+    return failure(err);
   }
 }
 
@@ -34,17 +46,22 @@ export async function followCreatorByIdAction(creatorId) {
   try {
     await followCreator(session.workspace.id, id);
   } catch (err) {
-    if (err instanceof WatchlistError) return { error: err.message };
-    console.error(err);
-    return { error: OOPS };
+    return failure(err);
   }
   refresh();
-  return { creator: await getCreatorSummary(session.workspace.id, id) };
+  const [creator, lastSlot] = await Promise.all([getCreatorSummary(session.workspace.id, id), tookLastSlot(session.workspace.id, 'creator')]);
+  return { creator, lastSlot };
 }
 
-export async function unfollowCreatorByIdAction(creatorId) {
+// Subreddits and brands are followed by name.
+export async function followByNameAction(kind, query) {
   const session = await requireSession();
-  await unfollowCreator(session.workspace.id, String(creatorId ?? ''));
-  refresh();
-  return { ok: true };
+  const topicKind = kind === 'community' ? 'community' : 'keyword';
+  try {
+    const { query: name } = await addTopic(session.workspace.id, { kind: topicKind, query: String(query ?? '') });
+    refresh();
+    return { name, lastSlot: await tookLastSlot(session.workspace.id, topicKind) };
+  } catch (err) {
+    return failure(err);
+  }
 }
