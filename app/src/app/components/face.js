@@ -7,7 +7,8 @@ import PlatformMark from './platform-mark.js';
 
 // A creator's profile photo from whichever channel gave us one, marked with that channel.
 // Initials stand in when there's no photo or it won't load (some channels' photo links expire).
-export default function Face({ name, kind = 'creator', photo, size = 'md' }) {
+// `badge` false drops the channel mark, for when something around the face already says where it's from.
+export default function Face({ name, kind = 'creator', photo, size = 'md', badge = true }) {
   const [failed, setFailed] = useState(false);
   const img = useRef(null);
 
@@ -20,7 +21,7 @@ export default function Face({ name, kind = 'creator', photo, size = 'md' }) {
   return (
     <span className={`face ${size}`} title={`Photo from ${PLATFORM_NAMES[photo.platform] ?? photo.platform}`}>
       <img ref={img} src={photo.url} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
-      {size === 'xs' ? null : (
+      {size === 'xs' || !badge ? null : (
         <span className="face-badge">
           <PlatformMark platform={photo.platform} size="xs" />
         </span>

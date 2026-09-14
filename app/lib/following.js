@@ -61,19 +61,22 @@ export async function getSourceStats({ creatorIds = [], communities = [] }) {
         group by 1, 2, 3, 4, 5`,
       params,
     ),
+    // Every live story each source is in, newest first, with the channels they were part of it on.
     pool.query(
-      `select x.key, s.id, ${HEADLINE} as headline
-         from (select h.creator_id::text as key, sp.story_id
+      `select x.key, s.id, ${HEADLINE} as headline, v.feed_edit ->> 'dek' as dek, s.category, s.heat, s.first_post_at, s.last_post_at, x.platforms
+         from (select h.creator_id::text as key, sp.story_id, array_agg(distinct p.platform::text) as platforms
                  from story_posts sp join posts p on p.id = sp.post_id join creator_handles h on h.id = p.handle_id
                 where h.creator_id = any($1::uuid[])
-               union
-               select lower(p.community), sp.story_id
+                group by 1, 2
+               union all
+               select lower(p.community), sp.story_id, array_agg(distinct p.platform::text)
                  from story_posts sp join posts p on p.id = sp.post_id
-                where lower(p.community) = any($2::text[])) x
+                where lower(p.community) = any($2::text[])
+                group by 1, 2) x
          join stories s on s.id = x.story_id and ${LIVE_STORY}
          ${SHARED_FEED}
          ${LATEST_PASSED}
-        order by s.heat desc nulls last`,
+        order by s.last_post_at desc nulls last, s.heat desc nulls last`,
       params,
     ),
   ]);
@@ -96,7 +99,19 @@ export async function getSourceStats({ creatorIds = [], communities = [] }) {
       ch.before += r.interactions;
     }
   }
-  for (const r of stories.rows) entry(r.key).stories.push({ id: r.id, headline: r.headline });
+  const iso = (d) => (d instanceof Date ? d.toISOString() : d);
+  for (const r of stories.rows) {
+    entry(r.key).stories.push({
+      id: r.id,
+      headline: r.headline,
+      dek: r.dek,
+      category: r.category,
+      heat: r.heat,
+      first_post_at: iso(r.first_post_at),
+      last_post_at: iso(r.last_post_at),
+      platforms: (r.platforms ?? []).sort((a, b) => PLATFORM_ORDER.indexOf(a) - PLATFORM_ORDER.indexOf(b)),
+    });
+  }
 
   const out = new Map();
   for (const [key, e] of acc) {
@@ -110,7 +125,7 @@ export async function getSourceStats({ creatorIds = [], communities = [] }) {
       daily: e.daily,
       channels: raw.map((c) => ({ platform: c.platform, posts: c.posts, interactions: c.interactions, views: c.views, change: change(c.interactions, c.before) })),
       storyCount: e.stories.length,
-      stories: e.stories.slice(0, 3),
+      stories: e.stories.slice(0, 8),
     });
   }
   return out;

@@ -3,11 +3,13 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState, useTransition } from 'react';
 import { plural } from '../../../../lib/format.js';
+import ChannelRing from '../../components/channel-ring.js';
 import CreatorFinder from '../../components/creator-finder.js';
 import Face from '../../components/face.js';
 import Icon from '../../components/icons.js';
 import PlatformMark from '../../components/platform-mark.js';
 import { Change, Sparkline, compact } from '../../components/source-numbers.js';
+import StoryStrip from '../../components/story-strip.js';
 import { followAction, setPausedAction, unfollowAction } from './actions.js';
 
 const TABS = [
@@ -42,15 +44,10 @@ const anchorOf = (event) => {
   return { x: r.right, y: r.bottom };
 };
 
-function Marks({ handles }) {
-  return (
-    <span className="marks">
-      {handles.map((h) => (
-        <PlatformMark key={h.platform} platform={h.platform} size="xs" />
-      ))}
-    </span>
-  );
-}
+// The photo with a ring of channel slices around it; click the ring for the channels.
+const ring = (item, size) => (
+  <ChannelRing name={item.name} kind={item.kind} photo={item.photo} handles={item.handles} channels={item.stats.channels} collected={item.collected} size={size} />
+);
 
 // Each channel's week for one creator or subreddit, and the stories they're in.
 function Breakdown({ item }) {
@@ -112,17 +109,13 @@ function Breakdown({ item }) {
         </table>
       </div>
       <div className="exp-side">
-        <h4>In stories this week</h4>
         {stats.stories.length ? (
-          <ul>
-            {stats.stories.map((s) => (
-              <li key={s.id}>
-                <Link href={`/stories/${s.id}`}>{s.headline ?? 'Untitled story'}</Link>
-              </li>
-            ))}
-          </ul>
+          <StoryStrip stories={stats.stories} label={`Latest stories with ${item.name}`} />
         ) : (
-          <p className="muted-note">None this week.{item.follow?.active ? ' Pausing frees the slot until they’re busy again.' : ''}</p>
+          <>
+            <h4>In stories this week</h4>
+            <p className="muted-note">None this week.{item.follow?.active ? ' Pausing frees the slot until they’re busy again.' : ''}</p>
+          </>
         )}
         {stats.storyCount > stats.stories.length && item.follow ? (
           <Link className="exp-more" href={`/stories?follow=${item.follow.id}`}>
@@ -307,31 +300,34 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
     return (
       <li key={s.key} className={`lrow${s.follow.paused ? ' paused' : ''}`}>
         <div className="lcols">
-          <button type="button" className="rowtoggle" aria-expanded={open} onClick={() => toggle(s.key)}>
-            <Icon name="chevron" size={14} />
-            <Face name={s.name} kind={s.kind} photo={s.photo} size="md" />
-            <span className="rt-body">
-              <span className="nameline">
-                <b>{s.name}</b>
-                {s.kind === 'creator' ? <Marks handles={s.handles} /> : null}
+          <div className={`rowlead${open ? ' open' : ''}`}>
+            <button type="button" className="rowchev" tabIndex={-1} aria-hidden="true" onClick={() => toggle(s.key)}>
+              <Icon name="chevron" size={14} />
+            </button>
+            {ring(s, 'md')}
+            <button type="button" className="rowtoggle" aria-expanded={open} onClick={() => toggle(s.key)}>
+              <span className="rt-body">
+                <span className="nameline">
+                  <b>{s.name}</b>
+                </span>
+                <span className="rt-meta">
+                  <span>{s.kind === 'community' ? 'Subreddit' : s.handles[0]?.handle}</span>
+                  {s.follow.paused ? (
+                    <span className="chip paused">Paused · not using a slot</span>
+                  ) : !s.collected ? (
+                    <span className="chip pending">Collecting starts with the next daily run</span>
+                  ) : isQuiet(s) ? (
+                    <span className="chip quiet">No stories this week</span>
+                  ) : null}
+                  {s.collected ? (
+                    <span className="m-only">
+                      {plural(s.stats.storyCount, 'story', 'stories')} · {compact(s.stats.interactions)} interactions
+                    </span>
+                  ) : null}
+                </span>
               </span>
-              <span className="rt-meta">
-                <span>{s.kind === 'community' ? 'Subreddit' : s.handles[0]?.handle}</span>
-                {s.follow.paused ? (
-                  <span className="chip paused">Paused · not using a slot</span>
-                ) : !s.collected ? (
-                  <span className="chip pending">Collecting starts with the next daily run</span>
-                ) : isQuiet(s) ? (
-                  <span className="chip quiet">No stories this week</span>
-                ) : null}
-                {s.collected ? (
-                  <span className="m-only">
-                    {plural(s.stats.storyCount, 'story', 'stories')} · {compact(s.stats.interactions)} interactions
-                  </span>
-                ) : null}
-              </span>
-            </span>
-          </button>
+            </button>
+          </div>
           <span className={`cell col-stories${s.stats.storyCount ? '' : ' none'}`}>
             {!s.collected ? '—' : s.stats.storyCount ? <Link href={`/stories?follow=${s.follow.id}`}>{s.stats.storyCount}</Link> : '0'}
           </span>
@@ -356,11 +352,11 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
 
   const suggestedCard = (s) => (
     <article key={s.key} className="person">
-      <Face name={s.name} kind={s.kind} photo={s.photo} size="lg" />
+      {ring(s, 'lg')}
       <div className="person-body">
         <span className="nameline">
           <b>{s.name}</b>
-          {s.kind === 'creator' ? <Marks handles={s.handles} /> : <span className="kindtag">Subreddit</span>}
+          {s.kind === 'creator' ? null : <span className="kindtag">Subreddit</span>}
         </span>
         <span className="numbers">
           {s.stats.storyCount ? (

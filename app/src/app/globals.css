@@ -416,6 +416,29 @@ details.more .narrative, details.more .ev { margin-top: 10px; }
 .face-badge { position: absolute; right: -3px; bottom: -3px; display: inline-flex; border-radius: 5px; box-shadow: 0 0 0 2px var(--surface); }
 .face-badge .pmark.xs { width: 15px; height: 15px; font-size: 7px; }
 
+/* Channel ring: one slice per channel around the face, like a status ring; grey when quiet this week */
+.ring { position: relative; display: inline-grid; flex: none; place-items: center; }
+.ring.xs { width: 30px; height: 30px; }
+.ring.sm { width: 38px; height: 38px; }
+.ring.md { width: 50px; height: 50px; }
+.ring.lg { width: 58px; height: 58px; }
+.ringbtn { display: grid; place-items: center; width: 100%; height: 100%; padding: 0; border: 0; border-radius: 50%; background: none; color: inherit; cursor: pointer; }
+.ringbtn:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.ring-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; transition: transform 0.15s; }
+.ring-svg circle { fill: none; stroke: var(--pm); stroke-width: 2.4; }
+.ring-svg circle.quiet { stroke: var(--line-2); }
+.ringbtn:hover .ring-svg, .ringbtn[aria-expanded='true'] .ring-svg { transform: scale(1.06); }
+.ring-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; display: grid; gap: 8px; width: max-content; min-width: 240px; max-width: min(320px, calc(100vw - 32px)); padding: 10px 12px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); box-shadow: var(--shadow); color: var(--ink); font-size: 13px; text-align: left; cursor: default; }
+.ring-head { color: var(--ink-3); font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.ring-pop ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.ring-pop li { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 1px 10px; }
+.ring-pop li.quiet .pmark { opacity: 0.45; }
+.ring-ch { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.ring-ch b { font-size: 13.5px; white-space: nowrap; }
+.ring-ch a { overflow: hidden; color: var(--ink-2); text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+.ring-ch a:hover { color: var(--link); text-decoration: underline; }
+.ring-n { grid-column: 2; color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+
 /* A week of numbers */
 .nameline { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .nameline b { overflow: hidden; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
@@ -458,10 +481,12 @@ details.more .narrative, details.more .ev { margin-top: 10px; }
 .sortbtn:hover, .sortbtn[aria-pressed='true'] { color: var(--ink); }
 .lrow, .brow { padding: 10px 14px 10px 16px; }
 .lrow + .lrow, .lgroup + .lrow, .brow + .brow { border-top: 1px solid var(--line); }
-.lrow.paused .face, .lrow.paused .avatar, .lrow.paused .nameline, .brow.paused .avatar, .brow.paused .brow-name { opacity: 0.5; }
-.rowtoggle { display: grid; grid-template-columns: 14px auto minmax(0, 1fr); align-items: center; gap: 10px; min-width: 0; padding: 2px 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
-.rowtoggle > .icon { color: var(--ink-3); transform: rotate(-90deg); transition: transform 0.15s; }
-.rowtoggle[aria-expanded='true'] > .icon { transform: none; }
+.lrow.paused .ring, .lrow.paused .nameline, .brow.paused .avatar, .brow.paused .brow-name { opacity: 0.5; }
+.rowlead { display: grid; grid-template-columns: 14px auto minmax(0, 1fr); align-items: center; gap: 10px; min-width: 0; }
+.rowchev { display: grid; place-items: center; padding: 0; border: 0; background: none; color: var(--ink-3); cursor: pointer; }
+.rowchev .icon { transform: rotate(-90deg); transition: transform 0.15s; }
+.rowlead.open .rowchev .icon { transform: none; }
+.rowtoggle { display: block; min-width: 0; padding: 2px 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
 .rowtoggle:hover .nameline b { text-decoration: underline; text-underline-offset: 3px; }
 .rt-body { display: grid; gap: 3px; min-width: 0; }
 .rt-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; color: var(--ink-3); font-size: 12.5px; }
@@ -493,9 +518,26 @@ details.more .narrative, details.more .ev { margin-top: 10px; }
 .ch a:hover { color: var(--link); text-decoration: underline; }
 .exp-side { display: grid; align-content: start; gap: 8px; }
 .exp-side h4 { margin: 0; color: var(--ink-3); font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
-.exp-side ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.exp-side li a { font-family: var(--serif); font-size: 15.5px; line-height: 1.35; text-decoration: none; }
-.exp-side li a:hover { text-decoration: underline; }
+.exp-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 26px; }
+/* Latest stories they're in: one card at a time, swipe or arrows */
+.strip { display: grid; gap: 8px; min-width: 0; }
+.strip-nav { display: inline-flex; align-items: center; gap: 2px; color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.strip-nav > span { min-width: 38px; text-align: center; }
+.strip-nav button { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--ink-2); cursor: pointer; }
+.strip-nav button:hover:not(:disabled) { border-color: var(--ink-3); color: var(--ink); }
+.strip-nav button:disabled { opacity: 0.35; cursor: default; }
+.strip-track { display: flex; gap: 12px; margin: 0; padding: 0; overflow-x: auto; list-style: none; scroll-snap-type: x mandatory; scrollbar-width: none; overscroll-behavior-x: contain; }
+.strip-track::-webkit-scrollbar { display: none; }
+.strip-card { position: relative; display: grid; flex: 0 0 100%; align-content: start; gap: 6px; min-width: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); scroll-snap-align: start; scroll-snap-stop: always; transition: border-color 0.15s, box-shadow 0.15s; }
+.strip-card:hover { border-color: var(--line-2); box-shadow: var(--shadow); }
+.strip-title { display: -webkit-box; margin: 0; overflow: hidden; font-size: 16px; font-weight: 650; line-height: 1.25; letter-spacing: -0.01em; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.strip-title a { text-decoration: none; }
+.strip-title a::after { content: ''; position: absolute; inset: 0; border-radius: var(--r); }
+.strip-title a:focus-visible { outline: none; }
+.strip-title a:focus-visible::after { outline: 2px solid var(--link); outline-offset: 2px; }
+.strip-dek { display: -webkit-box; margin: 0; overflow: hidden; color: var(--ink-2); font-family: var(--serif); font-size: 14.5px; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.strip-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+.strip-foot .heat { position: relative; z-index: 1; }
 .exp-more { color: var(--link); font-size: 13.5px; font-weight: 600; text-decoration: none; }
 .exp-note { margin: 4px 0 0; color: var(--ink-3); font-size: 12px; }
 
