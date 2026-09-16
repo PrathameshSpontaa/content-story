@@ -1,7 +1,9 @@
 'use server';
 
+// Admin server actions: credit grants, report updates and story review (approve, unpublish, reject, merge).
 import { revalidatePath } from 'next/cache';
-import { setStoryPublished } from '../../../../lib/admin.js';
+import { redirect } from 'next/navigation';
+import { keepSeparate, mergeStory, rejectStory, setStoryPublished } from '../../../../lib/admin.js';
 import { addCredits } from '../../../../lib/credits.js';
 import { ReportError, updateReport } from '../../../../lib/reports.js';
 import { requireAdmin } from '../../../../lib/session.js';
@@ -42,11 +44,78 @@ export async function updateReportAction(_previous, formData) {
   return { ok: true, message: 'Report updated.' };
 }
 
+function refresh(storyId) {
+  revalidatePath('/admin');
+  revalidatePath(`/admin/stories/${storyId}`);
+  revalidatePath('/stories');
+  revalidatePath(`/stories/${storyId}`);
+}
+
+// Quick publish or unpublish from the queue table.
 export async function publishAction(formData) {
-  await requireAdmin();
+  const session = await requireAdmin();
   const id = String(formData.get('id') ?? '');
   if (!UUID.test(id)) return;
-  await setStoryPublished(id, formData.get('published') === 'true');
-  revalidatePath('/admin');
-  revalidatePath('/feed');
+  await setStoryPublished(id, formData.get('published') === 'true', { reviewerId: session.user.id });
+  refresh(id);
+}
+
+// Approve, unpublish or reject one story, with an optional note; used by the review page's forms.
+export async function reviewAction(_previous, formData) {
+  const session = await requireAdmin();
+  const id = String(formData.get('id') ?? '');
+  const decision = String(formData.get('decision') ?? '');
+  const note = String(formData.get('note') ?? '').trim().slice(0, 500);
+  if (!UUID.test(id)) return { ok: false, message: 'Reload the page and try again.' };
+  const by = { reviewerId: session.user.id, note };
+
+  let ok = false;
+  let message = '';
+  if (decision === 'approve') {
+    ok = await setStoryPublished(id, true, by);
+    message = ok ? 'Published.' : 'Not published: it needs a version that passed every check, and can’t be a merged story.';
+  } else if (decision === 'unpublish') {
+    ok = await setStoryPublished(id, false, by);
+    message = ok ? 'Unpublished.' : 'Nothing changed.';
+  } else if (decision === 'reject') {
+    ok = await rejectStory(id, by);
+    message = ok ? 'Rejected. It stays out of the feed.' : 'Nothing changed.';
+  } else {
+    return { ok: false, message: 'Pick an action.' };
+  }
+  refresh(id);
+  return { ok, message };
+}
+
+// Merge candidate buttons: merge either way, or keep the pair separate. Lands back on the review
+// page with a short notice.
+export async function mergeAction(formData) {
+  const session = await requireAdmin();
+  const id = String(formData.get('id') ?? '');
+  const otherId = String(formData.get('otherId') ?? '');
+  const decision = String(formData.get('decision') ?? '');
+  const note = String(formData.get('note') ?? '').trim().slice(0, 500);
+  if (!UUID.test(id) || !UUID.test(otherId)) redirect('/admin');
+
+  let notice = '';
+  let landing = id;
+  try {
+    if (decision === 'merge_this_into_other') {
+      await mergeStory(id, otherId, { reviewerId: session.user.id, note });
+      notice = 'Merged. Its posts moved to the other story.';
+      landing = otherId;
+    } else if (decision === 'merge_other_into_this') {
+      await mergeStory(otherId, id, { reviewerId: session.user.id, note });
+      notice = 'Merged the other story into this one.';
+    } else if (decision === 'keep_separate') {
+      notice = (await keepSeparate(id, otherId)) ? 'Kept as two stories.' : 'Nothing to resolve.';
+    } else {
+      notice = 'Pick an action.';
+    }
+  } catch (err) {
+    notice = err.message;
+  }
+  refresh(id);
+  refresh(otherId);
+  redirect(`/admin/stories/${landing}?notice=${encodeURIComponent(notice)}`);
 }

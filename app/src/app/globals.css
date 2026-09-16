@@ -1051,3 +1051,37 @@ details.more .narrative, details.more .ev { margin-top: 10px; }
   .ob-actions .btn { flex: 1; }
   .ob-error { width: calc(100% - 32px); }
 }
+
+/* ── Settings: alerts, digest and team ────────────────── */
+.form.topgap { margin-top: 14px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 14.5px; }
+.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--ink); }
+.member-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+.member-tools .form { display: flex; align-items: center; gap: 6px; }
+.member-tools .form > .notice { flex-basis: 100%; padding: 6px 8px; font-size: 12.5px; }
+.member-tools select { min-height: 32px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--surface); font-size: 13px; }
+
+/* ─── Admin: review queue, story review and runs ─────────────────────────── */
+.admin-tabs { margin-bottom: -8px; }
+.review-head { display: grid; gap: 8px; }
+.review-head .sub a { color: var(--link); font-weight: 600; }
+.rgrid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.rgrid .page { gap: 16px; }
+.rgrid .form.mt, .rgrid .mt { margin-top: 14px; }
+.btnrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; }
+.checks { display: grid; gap: 6px; margin: 0; padding-left: 18px; font-size: 14px; }
+.checks .err { color: var(--bad); }
+.checks .warn { color: var(--accent-ink); }
+.err { color: var(--bad); }
+.cands { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.cands li { display: grid; gap: 6px; }
+.cands li > a { color: var(--ink); font-weight: 600; }
+.summary { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--ink-3); white-space: pre-wrap; word-break: break-word; max-width: 380px; }
+.stats dd small { font-size: 13px; font-weight: 500; }
+.cap { display: block; height: 6px; margin-top: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.cap i { display: block; height: 100%; border-radius: inherit; background: var(--good); }
+.cap.warn i { background: var(--accent-ink); }
+.cap.over i { background: var(--bad); }
+@media (max-width: 860px) {
+  .rgrid { grid-template-columns: 1fr; }
+}

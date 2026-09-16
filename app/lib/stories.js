@@ -123,16 +123,32 @@ export async function getTotals() {
   return rows[0];
 }
 
-export async function getStory(id) {
+// The workspace whose page is being rendered, so a workspace can open a finished report's story.
+// Only the story page (a request) reaches this; scripts and tests have no session and get null.
+async function callerWorkspaceId() {
+  try {
+    const { getSession } = await import('./session.js');
+    return (await getSession())?.workspace?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// A published story from the shared feed, or from the caller's own workspace feed (a finished
+// report). `workspaceId` names the caller; when omitted it is read from the signed-in session.
+export async function getStory(id, workspaceId) {
   if (!/^[0-9a-f-]{36}$/i.test(String(id))) return null;
+  const callerId = workspaceId === undefined ? await callerWorkspaceId() : workspaceId;
   const { rows } = await pool.query(
     `select s.id, s.category, s.heat, s.first_post_at, s.last_post_at,
             v.version, v.narrative, v.stats, v.written, v.platform_takes, v.feed_edit, v.checks,
             ${AUDIENCE} as audience
        from stories s
+       join feeds f on f.id = s.feed_id
        ${LATEST_PASSED_VERSION}
-      where s.id = $1 and s.published_at is not null`,
-    [id],
+      where s.id = $1 and s.published_at is not null
+        and (f.workspace_id is null or f.workspace_id = $2::uuid)`,
+    [id, /^[0-9a-f-]{36}$/i.test(String(callerId ?? '')) ? callerId : null],
   );
   const story = rows[0];
   if (!story) return null;

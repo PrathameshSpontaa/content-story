@@ -2,8 +2,11 @@
 
 import { revalidatePath } from 'next/cache';
 import { updateWorkspace } from '../../../../lib/accounts.js';
+import { saveAlertSettings } from '../../../../lib/alerts.js';
+import { FREQUENCIES, saveDigestSettings } from '../../../../lib/digests.js';
 import { GSTIN_PATTERN, GST_STATES } from '../../../../lib/india.js';
 import { requireSession } from '../../../../lib/session.js';
+import { TeamError, cancelInvite, changeRole, createInvite, removeMember } from '../../../../lib/team.js';
 
 export async function updateWorkspaceAction(_previous, formData) {
   const session = await requireSession();
@@ -20,4 +23,65 @@ export async function updateWorkspaceAction(_previous, formData) {
   await updateWorkspace(session.workspace.id, { name, gstin, billingState });
   revalidatePath('/settings');
   return { ok: true, message: 'Saved.' };
+}
+
+// Runs fn and turns a problem the person can act on into the form's message.
+async function attempt(fn, done = 'Saved.') {
+  try {
+    await fn();
+    revalidatePath('/settings');
+    return { ok: true, message: done };
+  } catch (err) {
+    if (err instanceof TeamError || /^Enter |^Choose /.test(err.message)) return { ok: false, message: err.message };
+    throw err;
+  }
+}
+
+export async function saveAlertsAction(_previous, formData) {
+  const session = await requireSession();
+  if (!['owner', 'admin'].includes(session.role)) return { ok: false, message: 'Only workspace owners and admins can change alerts.' };
+  return attempt(() =>
+    saveAlertSettings(session.workspace.id, {
+      active: formData.get('active') === 'on',
+      minHeat: formData.get('minHeat'),
+      destination: formData.get('destination'),
+    }),
+  );
+}
+
+export async function saveDigestAction(_previous, formData) {
+  const session = await requireSession();
+  if (!['owner', 'admin'].includes(session.role)) return { ok: false, message: 'Only workspace owners and admins can change the digest.' };
+  const frequency = String(formData.get('frequency') ?? 'off');
+  if (!FREQUENCIES.includes(frequency)) return { ok: false, message: 'Choose off, daily or weekly.' };
+  return attempt(() => saveDigestSettings(session.workspace.id, { frequency, destination: formData.get('destination') }));
+}
+
+export async function inviteAction(_previous, formData) {
+  const session = await requireSession();
+  if (!['owner', 'admin'].includes(session.role)) return { ok: false, message: 'Only workspace owners and admins can invite people.' };
+  const email = String(formData.get('email') ?? '').trim();
+  return attempt(
+    () => createInvite({ workspaceId: session.workspace.id, email, role: String(formData.get('role') ?? 'member'), invitedBy: session.user.id }),
+    `Invite sent to ${email.toLowerCase()}.`,
+  );
+}
+
+export async function cancelInviteAction(_previous, formData) {
+  const session = await requireSession();
+  if (!['owner', 'admin'].includes(session.role)) return { ok: false, message: 'Only workspace owners and admins can cancel invites.' };
+  return attempt(() => cancelInvite({ workspaceId: session.workspace.id, inviteId: String(formData.get('inviteId') ?? '') }), 'Invite cancelled.');
+}
+
+export async function changeRoleAction(_previous, formData) {
+  const session = await requireSession();
+  return attempt(
+    () => changeRole({ workspaceId: session.workspace.id, actorId: session.user.id, userId: String(formData.get('userId') ?? ''), role: String(formData.get('role') ?? '') }),
+    'Role changed.',
+  );
+}
+
+export async function removeMemberAction(_previous, formData) {
+  const session = await requireSession();
+  return attempt(() => removeMember({ workspaceId: session.workspace.id, actorId: session.user.id, userId: String(formData.get('userId') ?? '') }), 'Removed.');
 }
