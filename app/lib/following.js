@@ -8,10 +8,9 @@ import { STORY_TEXT, creatorPhoto, likeEscaped, matchesWord } from './watchlist.
 
 const PLATFORM_ORDER_SQL = `array['x', 'youtube', 'linkedin', 'instagram', 'tiktok', 'reddit']::platform[]`;
 const PLATFORM_ORDER = ['x', 'youtube', 'linkedin', 'instagram', 'tiktok', 'reddit'];
-const DAY = 86_400_000;
 
-// The week ends at the newest collected post, so the numbers don't drift between daily runs.
-const BOUNDS = `bounds as (select coalesce(max(published_at), now()) as week_end from posts)`;
+// The week is the last 7 days up to now, whatever was collected when.
+const BOUNDS = `bounds as (select now() as week_end)`;
 const LATEST_METRICS = `latest as (
   select distinct on (m.post_id) m.post_id, coalesce(m.likes, 0) + coalesce(m.comments, 0) + coalesce(m.shares, 0) as interactions, m.views
     from post_metrics m
@@ -30,12 +29,6 @@ const lower = (names) => names.map((n) => String(n).toLowerCase());
 
 export const EMPTY_STATS = Object.freeze({ posts: 0, interactions: 0, views: null, change: null, daily: [0, 0, 0, 0, 0, 0, 0], channels: [], storyCount: 0, stories: [] });
 const EMPTY_KEYWORD = Object.freeze({ mentions: 0, change: null, daily: [0, 0, 0, 0, 0, 0, 0], channels: [], storyCount: 0, stories: [] });
-
-export async function getWeek() {
-  const { rows } = await pool.query(`with ${BOUNDS} select week_end from bounds`);
-  const end = new Date(rows[0].week_end);
-  return { start: new Date(end.getTime() - 6 * DAY).toISOString(), end: end.toISOString() };
-}
 
 async function storyTotal() {
   const { rows } = await pool.query(`select count(*)::int as n from stories s ${SHARED_FEED} ${LATEST_PASSED} where ${LIVE_STORY}`);
@@ -218,13 +211,15 @@ export async function getKeywordStats(names) {
 
 const followState = (row) => (row.target_id ? { id: row.target_id, active: row.active, paused: !row.active } : null);
 
-// Creators we collect, plus any this workspace follows or paused.
+// Creators we collect, plus any this workspace follows or paused. Collected: a verified handle, a
+// handle the collector has been over at least once (even if it found nothing), or posts on record.
 async function listCreators(workspaceId) {
   const { rows } = await pool.query(
     `select c.id, c.name,
             json_agg(json_build_object('platform', h.platform, 'handle', h.handle, 'url', h.url) order by array_position(${PLATFORM_ORDER_SQL}, h.platform)) as handles,
             ${creatorPhoto('c.id')} as photo,
-            bool_or(h.verified) or exists (select 1 from posts p join creator_handles ch on ch.id = p.handle_id where ch.creator_id = c.id) as collected,
+            bool_or(h.verified) or bool_or(h.last_collected_at is not null)
+              or exists (select 1 from posts p join creator_handles ch on ch.id = p.handle_id where ch.creator_id = c.id) as collected,
             t.id as target_id, t.active
        from creators c
        join creator_handles h on h.creator_id = c.id
@@ -244,7 +239,10 @@ async function listCommunities(workspaceId) {
                union
                select t.query from tracking_targets t where t.workspace_id = $1 and t.kind = 'community') x
         order by lower(name), name)
-     select k.name, exists (select 1 from posts p where lower(p.community) = lower(k.name)) as collected, t.id as target_id, t.active
+     select k.name,
+            exists (select 1 from posts p where lower(p.community) = lower(k.name))
+              or exists (select 1 from query_collections q where q.platform = 'reddit' and q.query_key = lower(k.name)) as collected,
+            t.id as target_id, t.active
        from known k
        left join tracking_targets t on t.workspace_id = $1 and t.kind = 'community' and lower(t.query) = lower(k.name)`,
     [workspaceId],
@@ -281,7 +279,7 @@ async function listTopics(workspaceId, limit = 12) {
 }
 
 export async function getFollowing(workspaceId) {
-  const [creators, communities, topics, week, totalStories] = await Promise.all([listCreators(workspaceId), listCommunities(workspaceId), listTopics(workspaceId), getWeek(), storyTotal()]);
+  const [creators, communities, topics, totalStories] = await Promise.all([listCreators(workspaceId), listCommunities(workspaceId), listTopics(workspaceId), storyTotal()]);
   const [sourceStats, keywordStats] = await Promise.all([
     getSourceStats({ creatorIds: creators.map((c) => c.id), communities: communities.map((c) => c.name) }),
     getKeywordStats(topics.map((t) => t.name)),
@@ -319,7 +317,7 @@ export async function getFollowing(workspaceId) {
     follow: followState(t),
     stats: keywordStats.get(t.name.toLowerCase()) ?? EMPTY_KEYWORD,
   }));
-  return { week, totalStories, sources, keywords };
+  return { totalStories, sources, keywords };
 }
 
 // ─── Search ────────────────────────────────────────────────────────────────

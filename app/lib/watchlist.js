@@ -163,6 +163,7 @@ const creatorSummary = (where) => `
     select c.id, c.name,
            json_agg(json_build_object('platform', h.platform, 'handle', h.handle, 'url', h.url) order by array_position(${PLATFORM_ORDER}, h.platform)) as handles,
            bool_or(h.verified) as verified,
+           bool_or(h.last_collected_at is not null) as collected_once,
            ${creatorPhoto('c.id')} as photo,
            (select count(*) from posts p join creator_handles ch on ch.id = p.handle_id where ch.creator_id = c.id)::int as posts,
            array(select distinct sp.story_id
@@ -178,8 +179,8 @@ const creatorSummary = (where) => `
      group by c.id
   ) x`;
 
-// Covered: we collect this creator already (a verified handle, or posts on record).
-const withCovered = (row) => ({ ...row, covered: Boolean(row.verified) || row.posts > 0 });
+// Covered: we collect this creator already (a verified handle, a handle collected at least once, or posts on record).
+const withCovered = (row) => ({ ...row, covered: Boolean(row.verified) || Boolean(row.collected_once) || row.posts > 0 });
 
 export async function getCreatorSummary(workspaceId, creatorId) {
   const { rows } = await pool.query(creatorSummary('c.id = $2'), [workspaceId, creatorId]);

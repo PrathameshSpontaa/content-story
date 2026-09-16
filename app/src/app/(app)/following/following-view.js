@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, useTransition } from 'react';
 import { PLATFORM_NAMES, plural } from '../../../../lib/format.js';
 import ChannelRing from '../../components/channel-ring.js';
@@ -33,8 +34,13 @@ const SORT_VALUE = {
   change: (s) => s.stats.change ?? -Infinity,
 };
 const SUGGESTED_SHOWN = 9;
+// While a collection is queued or running, ask how it's going this often.
+const POLL_MS = 10_000;
 
 const slotName = (group) => (group === 'keyword' ? 'brand or topic' : 'creator or subreddit');
+const isCollecting = (status) => status?.state === 'queued' || status?.state === 'running';
+// The toast after a follow; `collecting` means the first collection is already on its way.
+const followedText = (name, res, group) => `Following ${name}.${res.collecting ? ' Collecting now.' : ''}${res.lastSlot ? ` That was your last ${slotName(group)} slot.` : ''}`;
 const isQuiet = (item) => Boolean(item.follow?.active && item.collected !== false && item.stats.storyCount === 0);
 const activity = (item) => item.stats.interactions ?? item.stats.mentions ?? 0;
 const bySignal = (a, b) => b.stats.storyCount - a.stats.storyCount || activity(b) - activity(a) || a.name.localeCompare(b.name);
@@ -50,12 +56,16 @@ const ring = (item, size) => (
 );
 
 // Each channel's week for one creator or subreddit, and the stories they're in.
-function Breakdown({ item }) {
+function Breakdown({ item, collecting }) {
   const { stats } = item;
   if (!item.collected) {
     return (
       <div className="expand">
-        <p className="muted-note">We start collecting {item.name} in the next daily run. Their numbers and stories show up here after that.</p>
+        <p className="muted-note">
+          {collecting
+            ? `We’re collecting ${item.name} now. Their numbers and stories show up here in a few minutes.`
+            : `Nothing has been collected for ${item.name} yet. Use “Collect now” above to start.`}
+        </p>
       </div>
     );
   }
@@ -177,7 +187,8 @@ function Breakdown({ item }) {
   );
 }
 
-export default function FollowingView({ sources, keywords, totalStories, plan }) {
+export default function FollowingView({ sources, keywords, totalStories, plan, refreshStatus = null }) {
+  const router = useRouter();
   const [tab, setTab] = useState('all');
   const [sort, setSort] = useState({ key: 'stories', dir: 'desc' });
   const [expanded, setExpanded] = useState(() => new Set());
@@ -186,16 +197,49 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
   const [showAll, setShowAll] = useState(false);
   const [toast, setToast] = useState(null);
   const [limit, setLimit] = useState(null);
+  const [status, setStatus] = useState(refreshStatus);
+  const [starting, setStarting] = useState(false);
   const [, startTransition] = useTransition();
   const listHeading = useRef(null);
   const current = useRef({ sources, keywords });
   current.current = { sources, keywords };
+  const collecting = isCollecting(status);
+  const wasCollecting = useRef(collecting);
 
   useEffect(() => {
     if (!toast) return undefined;
     const timer = setTimeout(() => setToast(null), 7000);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  // Each server render brings the collection's state as the database has it.
+  useEffect(() => setStatus(refreshStatus), [refreshStatus]);
+
+  // While a collection is queued or running, check on it; when it finishes, reload the numbers.
+  useEffect(() => {
+    if (!collecting) return undefined;
+    let stopped = false;
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch('/api/refresh', { cache: 'no-store' });
+        if (res.ok && !stopped) setStatus(await res.json());
+      } catch {
+        // A missed poll is fine; the next one tries again.
+      }
+    }, POLL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(id);
+    };
+  }, [collecting]);
+
+  useEffect(() => {
+    if (wasCollecting.current && !collecting) {
+      if (status?.lastError) say(`The collection didn’t finish. ${status.lastError}`);
+      else router.refresh();
+    }
+    wasCollecting.current = collecting;
+  }, [collecting, status, router]);
 
   // Menus and the limit message close on a click elsewhere or Escape; the message also on scroll.
   useEffect(() => {
@@ -225,6 +269,29 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
 
   const say = (text, undo = null) => setToast({ id: Date.now(), text, undo });
 
+  // A follow (or resume) that started a collection: show it as under way until the next poll says otherwise.
+  const startedCollecting = (res) => {
+    if (res?.collecting) setStatus((s) => ({ ...(s ?? {}), state: 'queued', lastError: null }));
+  };
+
+  // The "Collect now" button: the same request as Refresh on the Stories page, so its rules apply.
+  async function collectNow() {
+    setStarting(true);
+    try {
+      const res = await fetch('/api/refresh', { method: 'POST', cache: 'no-store' });
+      const data = await res.json().catch(() => ({}));
+      if (data.status) setStatus(data.status);
+      if (res.status === 401) say('Sign in again to collect.');
+      else if (!res.ok) say('Couldn’t start collecting just now. Try again in a minute.');
+      else if (!data.ok) say(data.message || 'Couldn’t start collecting just now.');
+      else say('Collecting now. Numbers show up in a few minutes.');
+    } catch {
+      say('Couldn’t reach Content-Story. Check your connection and try again.');
+    } finally {
+      setStarting(false);
+    }
+  }
+
   function run(key, action, done) {
     setBusy(key);
     setMenu(null);
@@ -238,7 +305,8 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
   function follow(ref, anchor) {
     run(ref.key, () => followAction(ref), (res) => {
       if (res.error) return res.limit && anchor ? setLimit({ ...res.limit, ...anchor }) : say(res.error);
-      say(`Following ${ref.name}.${res.lastSlot ? ` That was your last ${slotName(ref.kind === 'keyword' ? 'keyword' : 'source')} slot.` : ''}`, () => {
+      startedCollecting(res);
+      say(followedText(ref.name, res, ref.kind === 'keyword' ? 'keyword' : 'source'), () => {
         const now = [...current.current.sources, ...current.current.keywords].find((i) => i.key === ref.key);
         if (now?.follow) run(ref.key, () => unfollowAction(now.follow.id), (r) => say(r.error ?? `Stopped following ${ref.name}.`));
       });
@@ -262,7 +330,8 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
   function resume(item, anchor) {
     run(item.key, () => setPausedAction(item.follow.id, false), (res) => {
       if (res.error) return res.limit && anchor ? setLimit({ ...res.limit, ...anchor }) : say(res.error);
-      say(`Resumed ${item.name}.`);
+      startedCollecting(res);
+      say(`Resumed ${item.name}.${res.collecting ? ' Collecting now.' : ''}`);
     });
   }
 
@@ -364,7 +433,7 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
                   {s.follow.paused ? (
                     <span className="chip paused">Paused · not using a slot</span>
                   ) : !s.collected ? (
-                    <span className="chip pending">Collecting starts with the next daily run</span>
+                    <span className="chip pending">{collecting ? 'Collecting now…' : 'Not collected yet'}</span>
                   ) : isQuiet(s) ? (
                     <span className="chip quiet">No stories this week</span>
                   ) : null}
@@ -404,7 +473,7 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
           </span>
           {followMenu(s)}
         </div>
-        {open ? <Breakdown item={s} /> : null}
+        {open ? <Breakdown item={s} collecting={collecting} /> : null}
       </li>
     );
   };
@@ -468,7 +537,13 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
 
   return (
     <>
-      <CreatorFinder mode="follow" onToast={(text) => say(text)} onLimit={(anchor, lim) => setLimit({ ...lim, ...anchor })} placeholder="Search a name, paste a profile link, type r/subreddit, or a brand or topic" />
+      <CreatorFinder
+        mode="follow"
+        onToast={(text) => say(text)}
+        onLimit={(anchor, lim) => setLimit({ ...lim, ...anchor })}
+        onFollowed={startedCollecting}
+        placeholder="Search a name, paste a profile link, type r/subreddit, or a brand or topic"
+      />
 
       <section className="fsection" aria-labelledby="h-list">
         <div className="fsection-head">
@@ -503,8 +578,19 @@ export default function FollowingView({ sources, keywords, totalStories, plan })
                   {waiting.length ? (
                     <>
                       <li className="lgroup">
-                        <b>Not collected yet</b>
-                        <span>Numbers show up after the next daily run</span>
+                        <b>{collecting ? 'Collecting now' : 'Not collected yet'}</b>
+                        <span>
+                          {collecting
+                            ? 'Numbers and stories show up here in a few minutes'
+                            : status?.lastError
+                              ? `The last collection didn’t finish. ${status.lastError}`
+                              : 'Nothing has been collected for these yet'}
+                        </span>
+                        {!collecting && status?.enabled !== false ? (
+                          <button type="button" className="linkbtn" disabled={starting} onClick={collectNow}>
+                            {starting ? 'Starting…' : status?.lastError ? 'Try again' : 'Collect now'}
+                          </button>
+                        ) : null}
                       </li>
                       {waiting.map(listRow)}
                     </>

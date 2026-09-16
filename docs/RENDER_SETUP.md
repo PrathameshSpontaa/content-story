@@ -161,6 +161,26 @@ The worker still does the work. The schedules match the worker's in UTC: `30 0 *
 A true cron-only setup, where the worker doesn't schedule, would need a small change to
 `app/scripts/worker.js`: skip `registerSchedules` behind an environment flag.
 
+## 7b. One service only: the worker inside the web service
+
+The hand-made `content-story` web service is the only service on Render today, and background
+workers have no free plan. So in production the web service starts the worker itself, as a child
+process (`node scripts/worker.js`, see `app/src/instrumentation.js`). It inherits the web
+service's environment, so the web service needs the worker's keys too: `APIFY_TOKEN`,
+`GEMINI_API_KEY`, `PIPELINE_PROVIDER=real` and the caps. `npm run check:env -- worker` in the web
+service's Shell says what is missing. Without these, every collection fails and the Following page
+shows the error next to the uncollected sources.
+
+What this gives you: a follow is collected within a minute or two, and the timetable runs while the
+service is awake. What it does not give you: on the free plan the service sleeps after 15 minutes
+without traffic, and a sleeping service collects nothing, so the 06:00 IST run only happens if
+someone opened the site around then. A paid web service (always on) or the blueprint's separate
+worker fixes that.
+
+Once a separate worker service runs, set `WORKER_IN_WEB=false` on the web service so the queue is
+not worked from two processes. `WORKER_IN_WEB=true` forces it on (for example in development,
+where it is off by default).
+
 ## 8. Custom domain (later, N3)
 
 Web service > **Settings** > **Custom Domains** > add the domain and create the DNS record it

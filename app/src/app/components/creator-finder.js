@@ -11,7 +11,10 @@ import PlatformMark from './platform-mark.js';
 import { Change, Numbers, SplitBar } from './source-numbers.js';
 
 const reach = (c) =>
-  !c.covered ? 'New · collected once daily collection runs' : c.story_ids.length ? `In ${plural(c.story_ids.length, 'story', 'stories')} this week` : `${plural(c.posts, 'post')} collected`;
+  !c.covered ? 'New · collected as soon as you follow' : c.story_ids.length ? `In ${plural(c.story_ids.length, 'story', 'stories')} this week` : `${plural(c.posts, 'post')} collected`;
+
+// The toast after a follow; `collecting` means the first collection is already on its way.
+const followedText = (name, res, kind) => `Following ${name}.${res.collecting ? ' Collecting now.' : ''}${res.lastSlot ? ` That was your last ${slotName(kind)} slot.` : ''}`;
 
 async function findCreators(q, { platform, all } = {}) {
   const params = new URLSearchParams({ q });
@@ -67,9 +70,10 @@ function SourceSummary({ kind, stats, target }) {
 // profile link shows whether we already cover them, or opens a short form to add them with each
 // platform they post on.
 // mode 'follow' (Following page) follows straight away, also finds subreddits and brands, and shows
-// each result's week; onToast and onLimit let the page report results its own way.
+// each result's week; onToast and onLimit let the page report results its own way, and onFollowed
+// gets each successful follow's result (whether collection started, the last slot).
 // mode 'pick' hands creators to onPick (onboarding, which saves picks at the end).
-export default function CreatorFinder({ mode = 'follow', pickedIds = [], onPick, onToast, onLimit, placeholder = 'Search creators by name, or paste a profile link' }) {
+export default function CreatorFinder({ mode = 'follow', pickedIds = [], onPick, onToast, onLimit, onFollowed, placeholder = 'Search creators by name, or paste a profile link' }) {
   const following = mode === 'follow';
   const [query, setQuery] = useState('');
   const [found, setFound] = useState(null);
@@ -147,7 +151,8 @@ export default function CreatorFinder({ mode = 'follow', pickedIds = [], onPick,
         return;
       }
       setOverrides((o) => ({ ...o, [key]: res.creator?.target_id ?? 'following' }));
-      say(`Following ${res.name ?? item.name}.${res.lastSlot ? ` That was your last ${slotName(kind)} slot.` : ''}`);
+      onFollowed?.(res);
+      say(followedText(res.name ?? item.name, res, kind));
     });
   }
 
@@ -227,7 +232,8 @@ export default function CreatorFinder({ mode = 'follow', pickedIds = [], onPick,
         onPick?.(res.creator, { created: true });
         setNotice({ ok: true, text: `Added ${res.creator.name}.` });
       } else {
-        say(`Following ${res.creator.name}. We start collecting their posts in the next daily run.${res.lastSlot ? ' That was your last creator or subreddit slot.' : ''}`);
+        onFollowed?.(res);
+        say(followedText(res.creator.name, res, 'creator'));
       }
     });
   }
@@ -306,7 +312,7 @@ export default function CreatorFinder({ mode = 'follow', pickedIds = [], onPick,
         {c.stats ? (
           <SourceSummary kind="community" stats={c.stats} target={targetOf(keyOf('community', c), c.target_id)} />
         ) : (
-          <span className="result-meta">New to Content-Story · collected from the next daily run</span>
+          <span className="result-meta">New to Content-Story · collected as soon as you follow</span>
         )}
       </span>
       {rowButton('community', c)}
@@ -629,7 +635,7 @@ function Composer({ state, mode, pending, followingExisting, onChange, onAdd, on
         </p>
       ) : null}
 
-      <p className="composer-note">Free during the beta. We start collecting their posts in the next daily run; their stories show up in Your stories after that.</p>
+      <p className="composer-note">Free during the beta. We collect their posts as soon as you follow; their stories show up in Your stories a few minutes later.</p>
       <div className="composer-foot">
         <button type="button" className="btn ghost" onClick={onCancel}>
           Cancel

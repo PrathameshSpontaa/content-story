@@ -1,7 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { requestRefresh } from '../../../../lib/refresh.js';
+import { collectAfterFollow } from '../../../../lib/refresh.js';
 import { requireSession } from '../../../../lib/session.js';
 import { LimitError, WatchlistError, addTopic, followCreator, getTarget, removeTarget, setTargetActive, slotUsage } from '../../../../lib/watchlist.js';
 
@@ -28,10 +28,9 @@ export async function followAction({ kind, creatorId, name }) {
     return failure(err);
   }
   refresh();
-  // Start collecting the new follow's posts now. Not awaited: a refused or failed refresh never fails the follow.
-  requestRefresh({ workspaceId, userId: session.user.id, reason: 'follow' }).catch((err) => console.error('[follow] refresh request failed:', err.message));
-  const { used, limit } = await slotUsage(workspaceId, kind);
-  return { ok: true, lastSlot: used >= limit };
+  // Start collecting the new follow's posts now; `collecting` tells the page whether that began.
+  const [collecting, { used, limit }] = await Promise.all([collectAfterFollow({ workspaceId, userId: session.user.id }), slotUsage(workspaceId, kind)]);
+  return { ok: true, collecting, lastSlot: used >= limit };
 }
 
 // Unfollowing removes the entry; the reply carries what's needed to follow it again.
@@ -55,5 +54,7 @@ export async function setPausedAction(targetId, paused) {
     return failure(err);
   }
   refresh();
-  return { ok: true };
+  // Resuming is a follow again: anything missed while paused is collected now.
+  const collecting = paused ? false : await collectAfterFollow({ workspaceId: session.workspace.id, userId: session.user.id });
+  return { ok: true, collecting };
 }

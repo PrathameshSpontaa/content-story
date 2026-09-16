@@ -176,8 +176,9 @@ const busyMessage = (open) =>
 
 // Asks for a refresh of one workspace's tracked sources. Refusals by rule come back as
 // { ok: false, message, nextAllowedAt }; only a real failure (the database) throws.
-// A 'follow' refresh (someone was just followed) skips the cooldown, still counts toward the daily
-// maximum, and is refused silently (message null, silent true) when it can't run.
+// A 'follow' refresh (someone was just followed) skips the cooldown and the daily maximum (the
+// collector still scrapes each source at most once per cooldown, so a run of follows costs one
+// collection each), and is refused silently (message null, silent true) when it can't run.
 export async function requestRefresh({ workspaceId, userId = null, reason = 'button' }) {
   if (!workspaceId) throw new RefreshError('requestRefresh needs a workspaceId');
   if (!['button', 'follow'].includes(reason)) throw new RefreshError(`Unknown refresh reason "${reason}"`);
@@ -195,7 +196,7 @@ export async function requestRefresh({ workspaceId, userId = null, reason = 'but
     // one that is still waiting to start will pick the new follow up by itself.
     if (!(follow && state.open.status === 'running' && state.queuedCount === 0)) return refuse(busyMessage(state.open));
   }
-  if (state.dayFull) {
+  if (!follow && state.dayFull) {
     return refuse(`You've used all ${settings.on_demand_max_per_day} refreshes for today. You can refresh again tomorrow.`, state.nextAllowedAt);
   }
   if (!follow && state.cooldownUntil && state.cooldownUntil > now) {
@@ -220,6 +221,21 @@ export async function requestRefresh({ workspaceId, userId = null, reason = 'but
     return refuse('A refresh is already on its way. New stories appear in a few minutes.');
   }
   return { ok: true, requestId: request.id, message: 'Refreshing now. New stories appear in a few minutes.' };
+}
+
+// Starts collecting right after a follow. Every follow action calls this; a refusal or a failure
+// never fails the follow. Returns true when a collection is now queued or already under way.
+export async function collectAfterFollow({ workspaceId, userId = null }) {
+  try {
+    const res = await requestRefresh({ workspaceId, userId, reason: 'follow' });
+    if (res.ok) return true;
+    // Refused because one is already queued or running: that run picks the new follow up.
+    const state = await workspaceState(workspaceId, await getSettings());
+    return Boolean(state.open);
+  } catch (err) {
+    console.error('[follow] could not start collecting:', err.message);
+    return false;
+  }
 }
 
 // What the app shows next to the refresh button.

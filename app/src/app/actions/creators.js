@@ -1,6 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { collectAfterFollow } from '../../../lib/refresh.js';
 import { requireSession } from '../../../lib/session.js';
 import { ExistingCreatorError, LimitError, WatchlistError, addTopic, createCreator, followCreator, getCreatorSummary, slotUsage } from '../../../lib/watchlist.js';
 
@@ -23,6 +24,12 @@ async function tookLastSlot(workspaceId, kind) {
   return used >= limit;
 }
 
+// After a follow: start collecting now, and say whether this was the last slot.
+async function followed(session, kind) {
+  const [collecting, lastSlot] = await Promise.all([collectAfterFollow({ workspaceId: session.workspace.id, userId: session.user.id }), tookLastSlot(session.workspace.id, kind)]);
+  return { collecting, lastSlot };
+}
+
 // follow: false adds the creator without following them (onboarding saves picks at the end).
 export async function createCreatorAction(input) {
   const session = await requireSession();
@@ -34,7 +41,7 @@ export async function createCreatorAction(input) {
     const creator = await createCreator(session.workspace.id, { name: String(input?.name ?? ''), profiles, follow });
     if (!follow) return { creator };
     refresh();
-    return { creator, lastSlot: await tookLastSlot(session.workspace.id, 'creator') };
+    return { creator, ...(await followed(session, 'creator')) };
   } catch (err) {
     return failure(err);
   }
@@ -49,8 +56,8 @@ export async function followCreatorByIdAction(creatorId) {
     return failure(err);
   }
   refresh();
-  const [creator, lastSlot] = await Promise.all([getCreatorSummary(session.workspace.id, id), tookLastSlot(session.workspace.id, 'creator')]);
-  return { creator, lastSlot };
+  const [creator, rest] = await Promise.all([getCreatorSummary(session.workspace.id, id), followed(session, 'creator')]);
+  return { creator, ...rest };
 }
 
 // Subreddits and brands are followed by name.
@@ -60,7 +67,7 @@ export async function followByNameAction(kind, query) {
   try {
     const { query: name } = await addTopic(session.workspace.id, { kind: topicKind, query: String(query ?? '') });
     refresh();
-    return { name, lastSlot: await tookLastSlot(session.workspace.id, topicKind) };
+    return { name, ...(await followed(session, topicKind)) };
   } catch (err) {
     return failure(err);
   }
