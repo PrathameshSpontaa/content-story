@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { pool, tx } from './db.js';
 import { addCredits } from './credits.js';
 import { getPaymentProvider } from './payments/index.js';
+import { resumePausedTracking } from './tracking-billing.js';
 
 // Starts a plan subscription. Credits arrive with the first paid invoice, not before.
 export async function startSubscription(workspaceId, planId, provider = getPaymentProvider()) {
@@ -78,12 +79,15 @@ export async function recordTopupPaid(event) {
      on conflict (provider, provider_payment_id) do nothing`,
     [event.workspaceId, event.provider, event.providerPaymentId, event.providerOrderId, event.amountPaise, event.credits],
   );
-  return addCredits(event.workspaceId, event.credits, {
+  const result = await addCredits(event.workspaceId, event.credits, {
     kind: 'purchase',
     reference: `payment:${event.providerPaymentId}`,
     idempotencyKey: `${event.provider}:topup:${event.providerPaymentId}`,
     note: 'Credit top-up',
   });
+  // Tracking paused for lack of credits comes back as far as the new balance covers it.
+  if (result.applied) await resumePausedTracking(event.workspaceId);
+  return result;
 }
 
 // Checkout success callback for a top-up. Trusts nothing from the browser except the IDs and

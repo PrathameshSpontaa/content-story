@@ -12,7 +12,17 @@
     "test:billing": "node scripts/test-billing.js",
     "test:product": "node scripts/test-product.js",
     "import:dryrun": "node scripts/import-dryrun.js",
-    "backfill:avatars": "node scripts/backfill-avatars.js"
+    "backfill:avatars": "node scripts/backfill-avatars.js",
+    "worker": "node scripts/worker.js",
+    "daily": "node scripts/run-daily.js",
+    "enqueue": "node scripts/enqueue.js",
+    "margin": "node scripts/margin.js",
+    "check:env": "node scripts/check-env.js",
+    "test:pipeline": "node scripts/test-pipeline.js",
+    "test:collect": "node scripts/test-collect.js",
+    "test:jobs": "node scripts/test-jobs.js",
+    "test:notify": "node scripts/test-notify.js",
+    "test:admin": "node scripts/test-admin.js"
   },
   "keywords": [],
   "author": "",

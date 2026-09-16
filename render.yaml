@@ -1,0 +1,407 @@
+# Render Blueprint for Content-Story (https://render.com/docs/blueprint-spec).
+#
+# Two environments live side by side in one Render workspace, told apart by their names:
+#   staging     content-story-staging-*    Razorpay test mode, free Postgres, safe to break
+#   production  content-story-*            paid Postgres (daily backups), real keys
+#
+# Nothing deploys on push: autoDeployTrigger is off everywhere, so a deploy is always
+# "Manual Deploy" in the dashboard (see docs/RENDER_SETUP.md). Secrets are never in this file:
+# each `sync: false` key is typed into the environment group in the dashboard.
+#
+# Why commands start with `cd app &&` instead of `rootDir: app`: Render makes files outside a
+# service's root directory unavailable at build time and at runtime, and the app needs them.
+# scripts/migrate.js reads ../db/schema.sql and ../db/migrations. So every service builds from
+# the repo root and changes into app/ itself.
+#
+# Not here on purpose:
+#   - A Key Value (Redis) instance. The job queue is pg-boss, which keeps its queue tables in
+#     the same Postgres database (schema "pgboss"), so there is nothing for Key Value to do.
+#   - The hand-made services (web "content-story", database "content-story-dev"). The blueprint
+#     creates its own; docs/RENDER_SETUP.md says how to move over.
+#
+# Per environment:
+#   web      Next.js app and API. Runs migrations, then serves.    cd app && npm run migrate && npm run start
+#   worker   Long-running pg-boss worker. Works every queue and    cd app && npm run worker
+#            keeps its own IST timetable: daily 06:00, alerts every 30 min, digest 08:00,
+#            housekeeping hourly (plus re-queueing stuck reports every 5 min).
+#   cron x4  Belt and braces. Each run only enqueues one job and   cd app && npm run enqueue -- <job>
+#            exits; the worker still does the work. While the worker's own schedules are running
+#            (the default), suspend these four in the dashboard. pg-boss's "stately" queues drop a
+#            second copy of a job that is already queued, so running both is safe, only redundant.
+#            Cron schedules are UTC: 00:30 UTC = 06:00 IST, 02:30 UTC = 08:00 IST.
+#   db       Postgres. staging: free (deleted about 30 days after creation, no backups).
+#            production: paid, which is what gives daily backups and point-in-time recovery.
+
+previews:
+  generation: off
+
+services:
+  # ───────────────────────────── staging ─────────────────────────────
+  - type: web
+    name: content-story-staging-web
+    runtime: node
+    region: singapore
+    plan: free                        # spins down when idle; fine for staging
+    buildCommand: cd app && npm ci && npm run build
+    startCommand: cd app && npm run migrate && npm run start
+    healthCheckPath: /
+    autoDeployTrigger: off            # the user clicks Manual Deploy
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: content-story-staging-db
+          property: connectionString
+      - fromGroup: content-story-secrets-staging
+
+  - type: worker
+    name: content-story-staging-worker
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb                  # background workers have no free plan
+    buildCommand: cd app && npm ci
+    startCommand: cd app && npm run worker
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: content-story-staging-db
+          property: connectionString
+      - fromGroup: content-story-secrets-staging
+
+  # Cron alternative to the in-worker schedules: suspend these while the worker schedules run.
+  - type: cron
+    name: content-story-staging-cron-daily
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb
+    buildCommand: cd app && npm ci
+    startCommand: cd app && npm run enqueue -- daily
+    schedule: "30 0 * * *"            # 00:30 UTC = 06:00 IST
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: content-story-staging-db
+          property: connectionString
+      - fromGroup: content-story-secrets-staging
+
+  - type: cron
+    name: content-story-staging-cron-alerts
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb
+    buildCommand: cd app && npm ci
+    startCommand: cd app && npm run enqueue -- alerts
+    schedule: "*/30 * * * *"          # every 30 minutes
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: content-story-staging-db
+          property: connectionString
+      - fromGroup: content-story-secrets-staging
+
+  - type: cron
+    name: content-story-staging-cron-digest
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb
+    buildCommand: cd app && npm ci
+    startCommand: cd app && npm run enqueue -- digest
+    schedule: "30 2 * * *"            # 02:30 UTC = 08:00 IST
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: content-story-staging-db
+          property: connectionString
+      - fromGroup: content-story-secrets-staging
+
+  - type: cron
+    name: content-story-staging-cron-housekeeping
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb
+    buildCommand: cd app && npm ci
+    startCommand: cd app && npm run enqueue -- housekeeping
+    schedule: "0 * * * *"             # hourly
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: content-story-staging-db
+          property: connectionString
+      - fromGroup: content-story-secrets-staging
+
+  # ──────────────────────────── production ────────────────────────────
+  - type: web
+    name: content-story-web
+    runtime: node
+    region: singapore
+    plan: 1c-2g                       # always on; Next.js 16 server plus migrations at boot
+    buildCommand: cd app && npm ci && npm run build
+    startCommand: cd app && npm run migrate && npm run start
+    healthCheckPath: /
+    autoDeployTrigger: off            # the user clicks Manual Deploy
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: content-story-db
+          property: connectionString
+      - fromGroup: content-story-secrets-production
+
+  - type: worker
+    name: content-story-worker
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb                  # Apify and Gemini do the heavy lifting; raise if it swaps
+    buildCommand: cd app && npm ci
+    startCommand: cd app && npm run worker
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: content-story-db
+          property: connectionString
+      - fromGroup: content-story-secrets-production
+
+  - type: cron
+    name: content-story-cron-daily
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb
+    buildCommand: cd app && npm ci
+    startCommand: cd app && npm run enqueue -- daily
+    schedule: "30 0 * * *"            # 00:30 UTC = 06:00 IST
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: content-story-db
+          property: connectionString
+      - fromGroup: content-story-secrets-production
+
+  - type: cron
+    name: content-story-cron-alerts
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb
+    buildCommand: cd app && npm ci
+    startCommand: cd app && npm run enqueue -- alerts
+    schedule: "*/30 * * * *"          # every 30 minutes
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: content-story-db
+          property: connectionString
+      - fromGroup: content-story-secrets-production
+
+  - type: cron
+    name: content-story-cron-digest
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb
+    buildCommand: cd app && npm ci
+    startCommand: cd app && npm run enqueue -- digest
+    schedule: "30 2 * * *"            # 02:30 UTC = 08:00 IST
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: content-story-db
+          property: connectionString
+      - fromGroup: content-story-secrets-production
+
+  - type: cron
+    name: content-story-cron-housekeeping
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb
+    buildCommand: cd app && npm ci
+    startCommand: cd app && npm run enqueue -- housekeeping
+    schedule: "0 * * * *"             # hourly
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: content-story-db
+          property: connectionString
+      - fromGroup: content-story-secrets-production
+
+databases:
+  # Free Postgres is deleted about 30 days after creation unless upgraded (the hand-made
+  # content-story-dev expires 13 Oct 2026). Good enough for staging; never for customer data.
+  - name: content-story-staging-db
+    region: singapore
+    plan: free
+    databaseName: content_story
+    user: content_story
+    postgresMajorVersion: "18"
+
+  # Paid from day one: daily backups and point-in-time recovery exist only on paid plans.
+  # 0.5c-1g is the smallest paid plan. Raw Apify payloads are most of the data; see
+  # app/scripts/export-raw.js, which archives them and trims the database.
+  - name: content-story-db
+    region: singapore
+    plan: 0.5c-1g
+    databaseName: content_story
+    user: content_story
+    postgresMajorVersion: "18"
+    ipAllowList: []                   # internal connections only; add your IP to use psql from home
+
+# One group per environment. `sync: false` keys are typed in the dashboard (Environment >
+# Environment Groups) and never stored in git. Plain values are operating defaults: change them in
+# the dashboard, then Manual Deploy the services that read them. DATABASE_URL is deliberately
+# absent (a group cannot reference a database); each service gets it from `fromDatabase` above.
+# PIPELINE_PROVIDER=fake and DRYRUN_DATA are local-only: the dry-run fixtures (dryrun/data) are
+# not in git, so they do not exist on Render.
+envVarGroups:
+  - name: content-story-secrets-staging
+    envVars:
+      # ── who we are ──
+      - key: APP_URL                       # links in emails; the notifier falls back to content-story.onrender.com
+        value: https://content-story-staging-web.onrender.com
+      - key: ADMIN_EMAILS                  # comma-separated; these users see /admin and get ops emails
+        sync: false
+      - key: DATABASE_SSL                  # Render Postgres needs TLS; "false" only for a local database
+        value: "true"
+      # ── sign-in (Clerk development instance for staging) ──
+      - key: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      # ── payments (Razorpay test mode on staging) ──
+      - key: PAYMENT_PROVIDER              # fake | razorpay
+        value: razorpay
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      - key: TOPUP_PAISE_PER_CREDIT        # paise charged per credit on a top-up (100 = 1 rupee)
+        value: "100"
+      # ── money conversions for the margin and spend reports ──
+      - key: CREDIT_INR                    # rupee value of one credit (/admin/runs)
+        value: "1"
+      - key: USD_INR                       # rupees per dollar (/admin/runs and npm run margin)
+        value: "84"
+      # ── collection and AI ──
+      - key: PIPELINE_PROVIDER             # real on Render (fake needs local dry-run files)
+        value: real
+      - key: APIFY_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY                # from a PAID Google AI Studio project (N4)
+        sync: false
+      - key: GEMINI_CHEAP_MODEL            # cards and comment groups
+        value: gemini-3.5-flash-lite
+      - key: GEMINI_STRONG_MODEL           # grouping, narrative, writing
+        value: gemini-3.8-flash
+      - key: APIFY_DAILY_CAP_USD           # global safety cap per IST day, independent of customer credits
+        value: "3"
+      - key: GEMINI_DAILY_CAP_USD
+        value: "2"
+      - key: COLLECT_MIN_HOURS             # a creator or keyword is not re-collected within this window
+        value: "20"
+      - key: COMMENTS_PER_RUN              # comment budget for one collection run
+        value: "1500"
+      - key: STORY_DORMANT_DAYS            # quiet days before a story goes dormant
+        value: "4"
+      - key: AUTO_PUBLISH                  # false: stories wait in the admin review queue
+        value: "false"
+      # ── email (Resend). Without RESEND_API_KEY emails are recorded but not sent ──
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM                    # e.g. "Content-Story <stories@yourdomain.in>" on a domain verified in Resend
+        sync: false
+      # ── shown on /contact (Razorpay's review expects a real contact and address) ──
+      - key: SUPPORT_EMAIL
+        sync: false
+      - key: SUPPORT_PHONE
+        sync: false
+      - key: BUSINESS_ADDRESS
+        sync: false
+
+  - name: content-story-secrets-production
+    envVars:
+      - key: APP_URL                       # change to the custom domain when there is one (N3)
+        value: https://content-story-web.onrender.com
+      - key: ADMIN_EMAILS
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY   # Clerk production instance
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: PAYMENT_PROVIDER              # live Razorpay keys only after N1/N2 (GSTIN, KYC)
+        value: razorpay
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      - key: TOPUP_PAISE_PER_CREDIT
+        value: "100"
+      - key: CREDIT_INR
+        value: "1"
+      - key: USD_INR
+        value: "84"
+      - key: PIPELINE_PROVIDER
+        value: real
+      - key: APIFY_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_CHEAP_MODEL
+        value: gemini-3.5-flash-lite
+      - key: GEMINI_STRONG_MODEL
+        value: gemini-3.8-flash
+      - key: APIFY_DAILY_CAP_USD           # raise with the customer count; collection stops at the cap
+        value: "10"
+      - key: GEMINI_DAILY_CAP_USD
+        value: "5"
+      - key: COLLECT_MIN_HOURS
+        value: "20"
+      - key: COMMENTS_PER_RUN
+        value: "1500"
+      - key: STORY_DORMANT_DAYS
+        value: "4"
+      - key: AUTO_PUBLISH                  # keep false through the beta (N8: you approve stories)
+        value: "false"
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: SUPPORT_EMAIL
+        sync: false
+      - key: SUPPORT_PHONE
+        sync: false
+      - key: BUSINESS_ADDRESS
+        sync: false
