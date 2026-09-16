@@ -43,6 +43,19 @@ Also cap at the source, in case the worker itself misbehaves: Apify console > **
 **Usage limits** (monthly), and Google Cloud > **Billing** > **Budgets & alerts** on the Gemini
 project.
 
+## Referrals
+
+Every workspace has a link, `/r/CODE`, shown on the Refer page. Opening it sets a 30-day cookie
+and goes to sign-up; when that browser's account is created, the new workspace is recorded in
+`referrals` and gets its welcome bonus at once. The referrer is paid when the friend finishes or
+skips first-run setup (`status` goes `joined` → `rewarded`) and gets an email. Rewards stop after
+`REFERRAL.maxRewarded` friends per workspace (`status = 'capped'`); friends still get their bonus.
+Amounts live in `app/lib/pricing.js` (`REFERRAL`). Both grants are `credit_entries` rows with
+`reference = 'referral'` and keys `referral:<id>:friend` / `referral:<id>:referrer`, so nothing
+can be paid twice. Suspect abuse? `select referrer_workspace_id, count(*) from referrals group by 1
+order by 2 desc` shows who is bringing in accounts; delete the `referrals` row and add an
+`adjustment` entry to claw credits back. `npm run test:referrals` checks the whole flow.
+
 ## Where failed runs show up
 
 1. **/admin/runs** ("Runs and spend", for `ADMIN_EMAILS` users): every run with kind, status

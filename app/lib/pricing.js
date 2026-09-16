@@ -22,3 +22,8 @@ export const daysBetween = (from, to) => Math.round((Date.parse(to) - Date.parse
 
 export const fmtINR = (paise) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Number(paise || 0) / 100);
+
+// Refer a friend: they start with extra credits on top of the trial; you earn credits once they
+// have set up their stories. Rewards stop after `maxRewarded` friends so a pile of throwaway
+// sign-ups can't mint credits; friends still get their welcome bonus after that.
+export const REFERRAL = { friendCredits: 500, referrerCredits: 500, maxRewarded: 20, cookieDays: 30 };

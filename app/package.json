@@ -23,7 +23,8 @@
     "test:jobs": "node scripts/test-jobs.js",
     "test:notify": "node scripts/test-notify.js",
     "test:admin": "node scripts/test-admin.js",
-    "test:refresh": "node scripts/test-refresh.js"
+    "test:refresh": "node scripts/test-refresh.js",
+    "test:referrals": "node scripts/test-referrals.js"
   },
   "keywords": [],
   "author": "",

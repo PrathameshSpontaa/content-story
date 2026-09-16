@@ -68,9 +68,14 @@ export default async function BillingPage() {
             {credits.held ? ` · ${fmtNum(credits.held)} held for reports` : ''}
           </span>
         </div>
-        <a className="btn primary" href="#topup">
-          Top up
-        </a>
+        <div className="btnrow">
+          <Link className="btn ghost" href="/refer">
+            Refer a friend
+          </Link>
+          <a className="btn primary" href="#topup">
+            Top up
+          </a>
+        </div>
       </section>
 
       <section className="panel" id="topup">

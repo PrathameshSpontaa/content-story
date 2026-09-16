@@ -1,9 +1,10 @@
 // Runs before every request (Next.js 16 "proxy"). App pages need a signed-in Clerk user; the
-// landing page, sign-in, legal pages and payment webhooks (verified by signature) stay public.
+// landing page, sign-in, legal pages, referral links and payment webhooks (verified by signature)
+// stay public.
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
 import { NextResponse } from 'next/server';
 
-const isPublic = createRouteMatcher(['/', '/sign-in(.*)', '/sign-up(.*)', '/terms', '/privacy', '/refunds', '/contact', '/api/webhooks(.*)']);
+const isPublic = createRouteMatcher(['/', '/sign-in(.*)', '/sign-up(.*)', '/terms', '/privacy', '/refunds', '/contact', '/r/(.*)', '/api/webhooks(.*)']);
 const clerkConfigured = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY);
 // See devPreviewEmail() in lib/session.js: `next dev` only.
 const previewing = process.env.NODE_ENV === 'development' && Boolean(process.env.DEV_PREVIEW_EMAIL);

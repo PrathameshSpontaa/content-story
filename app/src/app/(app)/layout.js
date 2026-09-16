@@ -29,6 +29,7 @@ export default async function AppLayout({ children }) {
   ];
   const account = [
     { href: '/billing', label: 'Billing', icon: 'billing' },
+    { href: '/refer', label: 'Refer and earn', icon: 'gift' },
     { href: '/settings', label: 'Settings', icon: 'settings' },
     ...(session.isAdmin ? [{ href: '/admin', label: 'Admin', icon: 'admin' }] : []),
   ];

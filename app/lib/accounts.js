@@ -1,7 +1,9 @@
 // Users, workspaces and plans. An account is created on first sign-in: one user, a workspace
-// they own, and free trial credits granted once (by idempotency key).
+// they own, and free trial credits granted once (by idempotency key). A referral code that came
+// with the sign-in ties the new workspace to the friend who shared it.
 import { pool, tx } from './db.js';
 import { TRIAL } from './pricing.js';
+import { attachReferral } from './referrals.js';
 
 const adminEmails = () =>
   (process.env.ADMIN_EMAILS ?? '')
@@ -70,6 +72,17 @@ export async function ensureAccount(clerkUserId, loadProfile) {
        on conflict (idempotency_key) do nothing`,
       [workspaceId, TRIAL.credits, `trial:${workspaceId}`],
     );
+    // A referral that can't be recorded must never stop the account from being created.
+    if (profile.referralCode) {
+      await client.query('savepoint referral');
+      try {
+        await attachReferral(client, { workspaceId, userId, email, code: profile.referralCode });
+      } catch (err) {
+        console.error('referral not recorded:', err);
+        await client.query('rollback to savepoint referral');
+      }
+      await client.query('release savepoint referral');
+    }
   });
 
   return toSession((await pool.query(MEMBER, [clerkUserId])).rows[0]);
