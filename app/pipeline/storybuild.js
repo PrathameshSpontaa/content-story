@@ -1,8 +1,11 @@
 // Story building: groups newly understood posts into new stories or attaches them to existing ones,
 // then for every story that changed runs the narrative builder, writer, platform lens and feed editor,
 // with code doing every number and check, and writes a new version. Stories are never deleted.
+// In the shared feed the AI editor publishes, holds or rejects stories and merges split pairs.
 import { createHash, randomUUID } from 'node:crypto';
 import { pool, tx } from '../lib/db.js';
+import { getSettings } from '../lib/settings.js';
+import { judgeSameStory, reviewStory } from './editor.js';
 import { MODELS, RETRY_MARKER, generateJson, loadPrompt } from './gemini.js';
 import { commentWeight, computeStats, entityRanking, heatScore, round1, storyCounts } from './stats.js';
 import { lengthProblems, mainCharacterProblem, sameName, verifyStory } from './verify.js';
@@ -321,25 +324,132 @@ export function splitCandidates(stories) {
   return out;
 }
 
-async function recordSplitCandidates(feedId, log) {
+// What the same-story judge sees of one story: its latest headline and dek, main entity and up to 8
+// posts with their card's one-line summary. Null when the story is gone.
+async function storyForJudge(storyId) {
+  const { rows } = await pool.query(
+    `select s.id::text, s.status::text, s.review_source, s.category, s.first_post_at, s.last_post_at, e.name as main_entity,
+            coalesce(a.entity_id, s.main_entity_id)::text as entity,
+            coalesce(v.feed_edit ->> 'headline', v.written ->> 'headline') as headline, v.feed_edit ->> 'dek' as dek,
+            (select count(*)::int from story_posts sp where sp.story_id = s.id) as post_count
+       from stories s
+       left join entities e on e.id = s.main_entity_id
+       left join entity_aliases a on a.alias = lower(e.name)
+       left join lateral (select feed_edit, written from story_versions v where v.story_id = s.id order by v.version desc limit 1) v on true
+      where s.id = $1`,
+    [storyId],
+  );
+  if (!rows[0]) return null;
+  const { rows: posts } = await pool.query(
+    `select p.platform::text as platform, p.published_at, sc.about
+       from story_posts sp join posts p on p.id = sp.post_id left join story_cards sc on sc.post_id = p.id
+      where sp.story_id = $1 order by p.published_at limit 8`,
+    [storyId],
+  );
+  return { ...rows[0], posts };
+}
+
+// Folds `absorb` into `keep` as the admin merge does: posts move over (duplicates skipped), the absorbed
+// story leaves the feed marked by the AI, and the pair is resolved with the verdict. False when either
+// story changed meanwhile (merged, rejected or taken over by a person).
+async function mergeInto({ keep, absorb, pair, verdict }) {
+  return tx(async (client) => {
+    const { rows } = await client.query(
+      `select id::text, status::text, feed_id::text, review_source from stories where id = any($1::uuid[]) for update`,
+      [[keep.id, absorb.id]],
+    );
+    if (rows.length !== 2 || rows[0].feed_id !== rows[1].feed_id) return false;
+    if (rows.some((r) => ['merged', 'rejected'].includes(r.status) || r.review_source === 'human')) return false;
+    await client.query(
+      `insert into story_posts (story_id, post_id, reason, confidence, added_at)
+       select $2, post_id, reason, confidence, added_at from story_posts where story_id = $1
+       on conflict (story_id, post_id) do nothing`,
+      [absorb.id, keep.id],
+    );
+    await client.query('delete from story_posts where story_id = $1', [absorb.id]);
+    await client.query(
+      `update stories set status = 'merged', merged_into = $2, published_at = null,
+              review_source = 'ai', review_note = $3, reviewed_at = now(), reviewed_by = null
+        where id = $1`,
+      [absorb.id, keep.id, `AI merged into ${keep.id}: ${verdict.reason}`.slice(0, 500)],
+    );
+    await client.query('update stories set merged_into = $2 where merged_into = $1', [absorb.id, keep.id]);
+    await client.query(
+      `insert into merge_candidates (story_a, story_b, reason, resolved_at, decision) values ($1, $2, $3, now(), $4::jsonb)
+       on conflict (story_a, story_b) do update set resolved_at = now(), decision = excluded.decision`,
+      [pair.story_a, pair.story_b, pair.reason, JSON.stringify(verdict)],
+    );
+    return true;
+  });
+}
+
+// Records every split pair in merge_candidates. In the shared feed with auto_merge on, the AI judges
+// each new pair (unresolved, never judged, neither story reviewed by a person): same story and sure
+// enough → merged; different and sure enough → resolved; not sure → left for a person with the verdict.
+// Returns the ids of stories that absorbed another and need rebuilding.
+async function reviewSplitCandidates(ctx) {
+  const { feed, log, settings } = ctx;
   const { rows } = await pool.query(
     `select s.id::text, s.first_post_at, s.last_post_at, e.name as entity_name, coalesce(a.entity_id, s.main_entity_id)::text as entity
        from stories s
        join entities e on e.id = s.main_entity_id
        left join entity_aliases a on a.alias = lower(e.name)
       where s.feed_id = $1 and s.status not in ('merged', 'rejected') and s.first_post_at is not null`,
-    [feedId],
+    [feed.id],
   );
-  let added = 0;
-  for (const c of splitCandidates(rows)) {
+  const auto = ctx.shared && settings.auto_merge;
+  const threshold = Number(settings.merge_min_confidence);
+  const kept = new Set();
+  const counts = { added: 0, merged: 0, separate: 0, unsure: 0, failed: 0, person: 0 };
+  for (const pair of splitCandidates(rows)) {
     const { rowCount } = await pool.query(
       `insert into merge_candidates (story_a, story_b, reason) values ($1, $2, $3) on conflict (story_a, story_b) do nothing`,
-      [c.story_a, c.story_b, c.reason],
+      [pair.story_a, pair.story_b, pair.reason],
     );
-    added += rowCount;
+    counts.added += rowCount;
+    if (!auto) continue;
+    const { rows: known } = await pool.query('select resolved_at, decision from merge_candidates where story_a = $1 and story_b = $2', [pair.story_a, pair.story_b]);
+    if (!known[0] || known[0].resolved_at || known[0].decision) continue;
+    const [a, b] = await Promise.all([storyForJudge(pair.story_a), storyForJudge(pair.story_b)]);
+    if (!a || !b || [a, b].some((s) => ['merged', 'rejected'].includes(s.status))) continue;
+    if ([a, b].some((s) => s.review_source === 'human')) {
+      counts.person += 1;
+      continue;
+    }
+
+    let verdict;
+    try {
+      verdict = await judgeSameStory({ a, b, runId: ctx.runId, log, workspaceId: ctx.workspaceId });
+    } catch (err) {
+      if (err?.name === 'SpendCapReached' || err?.dailyQuota) log(`[stories] same-story check stopped: ${String(err.message).slice(0, 200)}`);
+      else log(`[stories] same-story check failed for ${pair.story_a} and ${pair.story_b}: ${String(err.message).slice(0, 200)}`);
+      counts.failed += 1;
+      continue;
+    }
+    const sure = verdict.confidence != null && verdict.confidence >= threshold;
+    const [keep, absorb] = verdict.keep === 'b' ? [b, a] : [a, b];
+    if (verdict.same_story && sure) {
+      if (await mergeInto({ keep, absorb, pair, verdict: { ...verdict, kept_id: keep.id } })) {
+        counts.merged += 1;
+        kept.delete(absorb.id);
+        kept.add(keep.id);
+        log(`[stories] AI merged ${absorb.id} into ${keep.id}`);
+      }
+      continue;
+    }
+    await pool.query(
+      `update merge_candidates set decision = $3::jsonb, resolved_at = case when $4 then now() end where story_a = $1 and story_b = $2`,
+      [pair.story_a, pair.story_b, JSON.stringify(verdict), sure],
+    );
+    counts[sure ? 'separate' : 'unsure'] += 1;
   }
-  if (added) log(`[stories] ${added} possible split ${added === 1 ? 'story' : 'stories'} sent to the review queue`);
-  return added;
+  const waiting = auto ? counts.unsure + counts.failed + counts.person : counts.added;
+  if (counts.added) log(`[stories] ${counts.added} possible split ${counts.added === 1 ? 'story' : 'stories'} found`);
+  if (auto && counts.merged + counts.separate + counts.unsure + counts.failed) {
+    log(`[stories] AI same-story check: ${counts.merged} merged, ${counts.separate} kept apart, ${counts.unsure} unsure, ${counts.failed} failed`);
+  }
+  if (waiting) log(`[stories] ${waiting} possible split ${waiting === 1 ? 'story' : 'stories'} left in the review queue`);
+  return [...kept];
 }
 
 // The minimum for a new story in a feed (the grouping prompt's rule 4, checked by code).
@@ -415,46 +525,77 @@ async function buildOne(ctx, plan) {
 
   stats.input_fingerprint = worldFingerprint(world, postIds);
   const comments = [...world.commentById.values()].length;
-  const status = nextStatus({ previous: plan.existing?.status ?? null, gotNewPosts: plan.newPostIds.length > 0, sources: stats.sources, comments, heat: stats.heat, previousHeat: plan.existing?.heat ?? null, lastPostAt: stats.last_post_at, now });
-  const publish = checks.pass && (process.env.AUTO_PUBLISH === 'true' || feed.workspace_id != null);
+  const status = nextStatus({ previous: plan.existing?.status ?? null, gotNewPosts: plan.newPostIds.length > 0 || plan.reason === 'merged', sources: stats.sources, comments, heat: stats.heat, previousHeat: plan.existing?.heat ?? null, lastPostAt: stats.last_post_at, now });
+  const verdict = await editorVerdict(ctx, { storyId, isNew, label, written, edit, stats, lens, checks, narrative });
   const cardModels = [...new Set([...world.cardByPost.values()].map((c) => c.model))].join(', ');
   const groupModels = [...new Set([...world.groupById.values()].map((g) => g.model))].join(', ');
   const strong = MODELS.strong();
-  const models = { cards: cardModels || null, groups: groupModels || null, builder: strong, writer: strong, lens: strong, edit: strong, prompt_version: PROMPT_VERSION };
+  const models = { cards: cardModels || null, groups: groupModels || null, builder: strong, writer: strong, lens: strong, edit: strong, ...(verdict ? { editor: verdict.model } : {}), prompt_version: PROMPT_VERSION };
 
   return tx(async (client) => {
-    if (isNew) {
-      await client.query(
-        `insert into stories (id, feed_id, status, category, main_entity_id, first_post_at, last_post_at, heat, published_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, case when $9 then now() end)`,
-        [storyId, feed.id, status, stats.category, mainEntityId, stats.first_post_at, stats.last_post_at, stats.heat, publish],
-      );
-    } else {
-      const { rows } = await client.query('select status from stories where id = $1 for update', [storyId]);
+    // Workspace feeds (reports) publish when checks pass. The shared feed publishes only on the AI
+    // editor's verdict, which is dropped if a person reviewed the story or it was published meanwhile.
+    let applied = verdict;
+    if (!isNew) {
+      const { rows } = await client.query('select status, review_source, published_at from stories where id = $1 for update', [storyId]);
       if (!rows[0] || ['merged', 'rejected'].includes(rows[0].status)) {
         log(`[stories] ${storyId} was ${rows[0]?.status ?? 'deleted'} while it was being rebuilt; left as it is`);
         return { storyId, isNew, version: null, passed: false, status: rows[0]?.status ?? null, skipped: true };
       }
+      if (rows[0].review_source === 'human' || rows[0].published_at) applied = null;
+    }
+    const publish = ctx.shared ? applied?.decision === 'publish' : checks.pass;
+    const reject = applied?.decision === 'reject';
+    const finalStatus = reject ? 'rejected' : status;
+    const note = applied ? `AI: ${applied.reason}`.slice(0, 500) : null;
+    if (isNew) {
+      await client.query(
+        `insert into stories (id, feed_id, status, category, main_entity_id, first_post_at, last_post_at, heat, published_at, review_source, review_note, reviewed_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, case when $9 then now() end, case when $10::text is not null then 'ai' end, $10, case when $10::text is not null then now() end)`,
+        [storyId, feed.id, finalStatus, stats.category, mainEntityId, stats.first_post_at, stats.last_post_at, stats.heat, publish, note],
+      );
+    } else {
       // A newer version that fails checks never unpublishes; the page keeps the latest passed version.
       await client.query(
         `update stories set status = $2, category = $3, main_entity_id = coalesce($4, main_entity_id), first_post_at = $5, last_post_at = $6, heat = $7,
-                published_at = case when $8 then coalesce(published_at, now()) else published_at end
+                published_at = case when $8 then coalesce(published_at, now()) when $9 then null else published_at end,
+                review_source = case when $10::text is not null then 'ai' else review_source end,
+                review_note = coalesce($10, review_note),
+                reviewed_at = case when $10::text is not null then now() else reviewed_at end,
+                reviewed_by = case when $10::text is not null then null else reviewed_by end
           where id = $1`,
-        [storyId, status, stats.category, mainEntityId, stats.first_post_at, stats.last_post_at, stats.heat, publish],
+        [storyId, finalStatus, stats.category, mainEntityId, stats.first_post_at, stats.last_post_at, stats.heat, publish, reject, note],
       );
     }
     for (const postId of plan.newPostIds) {
       await client.query(`insert into story_posts (story_id, post_id, reason, confidence) values ($1, $2, $3, $4) on conflict do nothing`, [storyId, postId, plan.why, plan.confidence]);
     }
     const { rows } = await client.query(
-      `insert into story_versions (story_id, version, narrative, stats, written, platform_takes, feed_edit, checks, passed, models)
-       select $1, coalesce(max(version), 0) + 1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9::jsonb from story_versions where story_id = $1
+      `insert into story_versions (story_id, version, narrative, stats, written, platform_takes, feed_edit, checks, passed, models, editor)
+       select $1, coalesce(max(version), 0) + 1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9::jsonb, $10::jsonb from story_versions where story_id = $1
        returning version`,
-      [storyId, JSON.stringify(narrative), JSON.stringify(stats), JSON.stringify(written), JSON.stringify(lens), JSON.stringify(edit), JSON.stringify(checks), checks.pass, JSON.stringify(models)],
+      [storyId, JSON.stringify(narrative), JSON.stringify(stats), JSON.stringify(written), JSON.stringify(lens), JSON.stringify(edit), JSON.stringify(checks), checks.pass, JSON.stringify(models), applied ? JSON.stringify(applied) : null],
     );
-    log(`[stories] ${isNew ? 'new' : 'updated'} ${storyId} v${rows[0].version}: ${postIds.length} posts (+${plan.newPostIds.length}), heat ${stats.heat}, ${status}, checks ${checks.pass ? 'pass' : `fail (${checks.errors.length} errors)`}${retried.length ? `, re-ran ${retried.join(' and ')}` : ''}`);
-    return { storyId, isNew, version: rows[0].version, passed: checks.pass, status };
+    log(`[stories] ${isNew ? 'new' : 'updated'} ${storyId} v${rows[0].version}: ${postIds.length} posts (+${plan.newPostIds.length}), heat ${stats.heat}, ${finalStatus}, checks ${checks.pass ? 'pass' : `fail (${checks.errors.length} errors)`}${retried.length ? `, re-ran ${retried.join(' and ')}` : ''}${applied ? `, AI editor: ${applied.decision}` : ''}`);
+    return { storyId, isNew, version: rows[0].version, passed: checks.pass, status: finalStatus, ...(applied ? { editor: applied.decision } : {}) };
   });
+}
+
+// The AI editor's verdict for a story in the shared feed, or null when it isn't asked: a workspace feed,
+// failed checks, auto_publish off, a person already reviewed it, or it is already published. A failed
+// call (quota, spend cap, bad answer) is logged and leaves the story unpublished.
+async function editorVerdict(ctx, { storyId, isNew, label, ...story }) {
+  if (!ctx.shared || !story.checks.pass || !ctx.settings.auto_publish) return null;
+  if (!isNew) {
+    const { rows } = await pool.query('select review_source, published_at from stories where id = $1', [storyId]);
+    if (!rows[0] || rows[0].review_source === 'human' || rows[0].published_at) return null;
+  }
+  try {
+    return await reviewStory({ storyId, label, runId: ctx.runId, workspaceId: ctx.workspaceId, log: ctx.log, ...story });
+  } catch (err) {
+    ctx.log(`[stories] AI editor failed for ${isNew ? `new story ${label}` : storyId}, left unpublished: ${String(err.message).slice(0, 200)}`);
+    return null;
+  }
 }
 
 // Heat and status for live stories that weren't rebuilt this run: heat decays while nothing new arrives.
@@ -532,6 +673,11 @@ function planFromGrouping(out, windowIds, existing) {
   return plans;
 }
 
+// A story as the grouping step and a rebuild see it (select from stories s left join entities e).
+const EXISTING_COLUMNS = `s.id::text, s.status::text, s.heat, s.first_post_at, s.last_post_at, e.name as main_entity,
+  (select coalesce(v.feed_edit ->> 'headline', v.written ->> 'headline') from story_versions v where v.story_id = s.id order by v.version desc limit 1) as headline,
+  array(select sp.post_id from story_posts sp where sp.story_id = s.id order by sp.post_id) as post_ids`;
+
 async function runPool(items, size, fn) {
   const results = [];
   const queue = items.map((item, i) => [item, i]);
@@ -555,12 +701,17 @@ async function runPool(items, size, fn) {
 // Groups the feed's new posts (or the given postIds) into stories and rebuilds every story whose
 // inputs changed. `single` makes one story from all the given posts (an on-demand report) without
 // the grouping model. `now` is for tests and re-running a past day. Returns one row per story built.
-export async function buildStories({ runId = null, feedId, postIds = null, single = false, log = console.log, now = Date.now(), title = null }) {
+// `treatAsShared` is for tests only: a throwaway workspace feed gets the shared feed's AI editor and
+// merge rules, so no test story ever shows in the real shared feed.
+export async function buildStories({ runId = null, feedId, postIds = null, single = false, log = console.log, now = Date.now(), title = null, treatAsShared = false }) {
   const { rows: feeds } = await pool.query('select id, workspace_id, name from feeds where id = $1', [feedId]);
   const feed = feeds[0];
   if (!feed) throw new Error(`feed ${feedId} does not exist`);
   const nowMs = ms(now);
-  const ctx = { runId, workspaceId: feed.workspace_id, feed, log, now: nowMs, aliases: await loadAliases() };
+  const ctx = {
+    runId, workspaceId: feed.workspace_id, feed, log, now: nowMs, aliases: await loadAliases(),
+    shared: feed.workspace_id == null || treatAsShared, settings: await getSettings(),
+  };
 
   // The window: posts with a card that aren't in any (non-merged) story of this feed yet.
   const { rows: windowRows } = await pool.query(
@@ -575,9 +726,7 @@ export async function buildStories({ runId = null, feedId, postIds = null, singl
   const windowIds = windowRows.map((r) => r.id);
 
   const { rows: existing } = await pool.query(
-    `select s.id::text, s.status::text, s.heat, s.first_post_at, s.last_post_at, e.name as main_entity,
-            (select coalesce(v.feed_edit ->> 'headline', v.written ->> 'headline') from story_versions v where v.story_id = s.id order by v.version desc limit 1) as headline,
-            array(select sp.post_id from story_posts sp where sp.story_id = s.id order by sp.post_id) as post_ids
+    `select ${EXISTING_COLUMNS}
        from stories s left join entities e on e.id = s.main_entity_id
       where s.feed_id = $1 and (s.status = any($2::story_status[])
             or ($3::text[] is not null and s.status not in ('merged', 'rejected') and exists (select 1 from story_posts sp where sp.story_id = s.id and sp.post_id = any($3::text[]))))
@@ -611,12 +760,15 @@ export async function buildStories({ runId = null, feedId, postIds = null, singl
     if (fp?.stored && fp.stored !== fp.current) plans.push({ ref: s.id, existing: s, newPostIds: [], title: s.headline ?? '', why: null, confidence: null, reason: 'new comments' });
   }
 
-  const results = await runPool(plans, parallel(), (plan) => buildOne(ctx, plan));
-  const built = results.map((r, i) => {
-    if (!r?.error) return r;
-    log(`[stories] ${plans[i].existing ? plans[i].existing.id : `new story "${plans[i].title}"`} failed: ${String(r.error.message).slice(0, 300)}`);
-    return { storyId: plans[i].existing?.id ?? null, isNew: !plans[i].existing, version: null, passed: false, status: plans[i].existing?.status ?? null, error: String(r.error.message).slice(0, 300) };
-  });
+  const buildAll = async (list) => {
+    const results = await runPool(list, parallel(), (plan) => buildOne(ctx, plan));
+    return results.map((r, i) => {
+      if (!r?.error) return r;
+      log(`[stories] ${list[i].existing ? list[i].existing.id : `new story "${list[i].title}"`} failed: ${String(r.error.message).slice(0, 300)}`);
+      return { storyId: list[i].existing?.id ?? null, isNew: !list[i].existing, version: null, passed: false, status: list[i].existing?.status ?? null, error: String(r.error.message).slice(0, 300) };
+    });
+  };
+  const built = await buildAll(plans);
 
   // A report whose posts are already in its story, with nothing new to build, still names that story.
   if (single && !plans.length) {
@@ -628,6 +780,22 @@ export async function buildStories({ runId = null, feedId, postIds = null, singl
   }
 
   await refreshOthers(feed.id, built.map((b) => b.storyId).filter(Boolean), nowMs, log);
-  await recordSplitCandidates(feed.id, log);
+
+  // Stories that absorbed another in the same-story check get a new version with the extra posts now,
+  // through the same checks and editor rule.
+  const keptIds = await reviewSplitCandidates(ctx);
+  if (keptIds.length) {
+    const { rows: kept } = await pool.query(
+      `select ${EXISTING_COLUMNS} from stories s left join entities e on e.id = s.main_entity_id
+        where s.id = any($1::uuid[]) and s.status not in ('merged', 'rejected')`,
+      [keptIds],
+    );
+    const rebuilt = await buildAll(kept.map((s) => ({ ref: s.id, existing: s, newPostIds: [], title: s.headline ?? '', why: null, confidence: null, reason: 'merged' })));
+    for (const r of rebuilt) {
+      const i = built.findIndex((b) => b.storyId === r.storyId);
+      if (i >= 0) built.splice(i, 1);
+      built.push({ ...r, merged: true });
+    }
+  }
   return built;
 }

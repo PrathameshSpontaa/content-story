@@ -28,6 +28,9 @@ function AdminNav({ current }) {
       <Link href="/admin/runs" className={current === 'runs' ? 'on' : undefined}>
         Runs and spend
       </Link>
+      <Link href="/admin/settings" className={current === 'settings' ? 'on' : undefined}>
+        Settings
+      </Link>
     </nav>
   );
 }

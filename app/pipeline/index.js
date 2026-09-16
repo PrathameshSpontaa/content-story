@@ -1,6 +1,8 @@
-// The production pipeline's two entry points, called by the job layer (pipeline/jobs.js): the daily
-// run for the shared feed, and one on-demand report into its workspace's own feed.
+// The production pipeline's entry points, called by the job layer (pipeline/jobs.js): the scheduled
+// run for the shared feed, one workspace's on-demand refresh into the shared feed, and one report.
 import { pool } from '../lib/db.js';
+import { collectMinHours, getSettings } from '../lib/settings.js';
+import { isFake } from './fixtures.js';
 import { buildStories } from './storybuild.js';
 
 export const SHARED_FEED_NAME = 'AI & tech (shared)';
@@ -27,17 +29,52 @@ export async function workspaceFeedId(workspaceId) {
   return created[0].id;
 }
 
+// How recently a source may have been collected and still be skipped by the scheduled run: most of
+// the interval from the settings, unless COLLECT_MIN_HOURS is set (tests and manual runs).
+export async function scheduledMinHours(settings = null) {
+  const env = process.env.COLLECT_MIN_HOURS;
+  if (env != null && env.trim() !== '' && Number.isFinite(Number(env))) return Number(env);
+  return collectMinHours(settings ?? (await getSettings()));
+}
+
 // Collect everything tracked, understand the new posts, then group and write the shared feed's stories.
 export async function runDaily({ runId, log = console.log }) {
   let collected = { skipped: true };
   let understood = { skipped: true };
   if (!skipCollect()) {
     const { collectDaily } = await load('collect');
-    collected = await collectDaily({ runId, log });
+    collected = await collectDaily({ runId, log, minHours: await scheduledMinHours() });
     const { understandNewPosts } = await load('understand');
     understood = await understandNewPosts({ runId, log });
   } else log('[daily] PIPELINE_SKIP_COLLECT=1: collection and understanding skipped');
   const stories = await buildStories({ runId, feedId: await sharedFeedId(), log });
+  return { collected, understood, stories };
+}
+
+// One workspace's refresh: collect only what it tracks (a source anyone collected within the
+// on-demand cooldown is not scraped again), understand the new posts, and attach the new and
+// updated posts to shared-feed stories or start new ones. `feedId` is for tests. Throws the
+// spend-cap error when the cap stopped collection before anything came in.
+export async function runRefresh({ runId, workspaceId, log = console.log, feedId = null }) {
+  if (!workspaceId) throw new Error('runRefresh needs a workspaceId');
+  const settings = await getSettings();
+  if (!isFake()) {
+    const { assertUnderDailyCap } = await import('../lib/spend.js');
+    await assertUnderDailyCap('apify');
+    await assertUnderDailyCap('gemini');
+  }
+  const { collectDaily } = await load('collect');
+  const collected = await collectDaily({ runId, workspaceId, log, minHours: settings.on_demand_cooldown_minutes / 60 });
+  if (collected.capReached && !collected.posts) throw collected.capReached;
+  let understood = { skipped: true };
+  if (collected.newPostIds.length) {
+    const { understandNewPosts } = await load('understand');
+    understood = await understandNewPosts({ runId, postIds: collected.newPostIds, log });
+  }
+  const postIds = [...new Set([...collected.newPostIds, ...collected.postIds])];
+  let stories = [];
+  if (postIds.length) stories = await buildStories({ runId, feedId: feedId ?? (await sharedFeedId()), postIds, log });
+  else log('[refresh] nothing new to build');
   return { collected, understood, stories };
 }
 

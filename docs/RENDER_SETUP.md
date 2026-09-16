@@ -64,8 +64,8 @@ filled in. These are the ones you type:
 | `SUPPORT_EMAIL`, `SUPPORT_PHONE`, `BUSINESS_ADDRESS` | What `/contact` shows. Razorpay's live-mode review expects a reachable contact and a registered address on the site. |
 
 The other keys have defaults in `render.yaml`: `APP_URL`, `PAYMENT_PROVIDER`, `PIPELINE_PROVIDER`,
-the two daily caps, the Gemini models, `COLLECT_MIN_HOURS`, `COMMENTS_PER_RUN`,
-`STORY_DORMANT_DAYS`, `AUTO_PUBLISH`, `DATABASE_SSL`, `CREDIT_INR`, `USD_INR` and
+the two daily caps, the Gemini models, `COMMENTS_PER_RUN`,
+`STORY_DORMANT_DAYS`, `DATABASE_SSL`, `CREDIT_INR`, `USD_INR` and
 `TOPUP_PAISE_PER_CREDIT`. `USD_INR` is the rupees-per-dollar rate that both the admin pages and
 `npm run margin` use. `DATABASE_URL` isn't in the groups; each
 service gets it from its database (`fromDatabase`).
@@ -129,7 +129,8 @@ npm run daily                   # the real run, in this shell
 `npm run daily` runs the same job the worker runs at 06:00 IST, in the foreground. It charges
 each workspace's tracking for the day, then collects and processes. It adds a row to `runs`,
 writes costs to `cost_events`, and shows up on **/admin/runs**. Re-running a date charges nothing
-twice, and collection skips any source collected within `COLLECT_MIN_HOURS`.
+twice, and collection skips any source collected within the current collection interval (set at
+**/admin/settings**).
 
 To try a run with almost no spend, set `APIFY_DAILY_CAP_USD` and `GEMINI_DAILY_CAP_USD` low in
 the staging group, redeploy the worker, and run it. Collection stops at the cap and you get the

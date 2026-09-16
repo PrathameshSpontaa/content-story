@@ -1,18 +1,20 @@
 // End-to-end check of the story builder in fake mode (no Gemini calls, no spend) against the real
 // database: grouping, new and attached stories, versions, checks, lifecycle, split-story flags, the
-// publish rule and a report. Prints PASS/FAIL, then deletes everything it created and restores the
-// heat and status of the stories that were already there.
+// publish rule, a report, and the AI editor's publish, hold, reject and merge decisions. Prints
+// PASS/FAIL, then deletes everything it created, restores the heat and status of the stories that were
+// already there and puts the app_settings rows it changed back as they were.
+// The AI editor checks run in a throwaway workspace feed with buildStories' treatAsShared option, so no
+// story the test publishes is ever in the real shared feed (workspace stories show only to members).
 // Usage: node scripts/test-pipeline.js
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// Fake provider, no collection, never auto-publish: set before the pipeline modules load.
+// Fake provider, no collection: set before the pipeline modules load.
 const overlay = join(tmpdir(), `content-story-pipeline-test-${Date.now()}`);
 process.env.PIPELINE_PROVIDER = 'fake';
 process.env.PIPELINE_SKIP_COLLECT = '1';
-process.env.AUTO_PUBLISH = 'false';
 process.env.PIPELINE_FIXTURE_OVERLAY = overlay;
 
 const { pool } = await import('../lib/db.js');
@@ -39,6 +41,17 @@ const writeFixture = (step, label, value) => {
   mkdirSync(join(overlay, step), { recursive: true });
   writeFileSync(join(overlay, step, `${label}.json`), JSON.stringify(value, null, 2));
 };
+const removeFixture = (step, label) => rmSync(join(overlay, step, `${label}.json`), { force: true });
+
+// The settings the pipeline reads, switched through app_settings rows. The rows as they were are read
+// first and put back exactly at the end; rows the test inserted are deleted.
+const SETTING_KEYS = ['auto_publish', 'auto_merge', 'merge_min_confidence'];
+const settingsBefore = await q('select key, value, updated_at, updated_by from app_settings where key = any($1::text[])', [SETTING_KEYS]);
+async function setSettings(patch) {
+  for (const [key, value] of Object.entries(patch)) {
+    await q(`insert into app_settings (key, value) values ($1, $2::jsonb) on conflict (key) do update set value = excluded.value`, [key, JSON.stringify(value)]);
+  }
+}
 
 // Fixtures for the four story steps, built from the real posts so every cited ID exists. The first
 // writer answer has 6 sentences and the first feed headline 14 words, so each step must be re-run.
@@ -104,6 +117,7 @@ const { rows: runRows } = await pool.query(`insert into runs (kind) values ('tes
 const runId = runRows[0].id;
 const [{ now: testStart }] = await q('select now()');
 let workspaceId = null;
+let editorWorkspaceId = null;
 
 try {
   // ── Code-only pieces ──────────────────────────────────────────────────────
@@ -188,6 +202,9 @@ try {
   });
 
   // ── The shared feed, three runs ───────────────────────────────────────────
+  // The AI editor and merge stay off here, so test stories in the real shared feed are never published
+  // and the imported Anthropic story is never merged. They are checked further down in a throwaway feed.
+  await setSettings({ auto_publish: false, auto_merge: false, merge_min_confidence: 0.7 });
   // Posts the dry run left out of every story: a threat-report story (two sources) and a second
   // Anthropic story whose dates overlap it and the imported Anthropic story.
   const A = 'tt_7684466722178469150';
@@ -345,9 +362,184 @@ try {
     assert.notEqual(row.published_at, null);
     assert.equal(row.posts, 2);
   });
+
+  // ── The AI editor and same-story merge, in a throwaway feed ───────────────
+  // A workspace with no members, its feed built with treatAsShared: the shared feed's rules apply, but
+  // nothing here shows to any user.
+  editorWorkspaceId = (await q(`insert into workspaces (name) values ('Pipeline editor test ${Date.now()}') returning id::text`))[0].id;
+  const edFeed = await workspaceFeedId(editorWorkspaceId);
+  const edBuild = () => buildStories({ runId, feedId: edFeed, log: quiet, now, treatAsShared: true });
+  const DEEPSEEK = ['rd_1wcbid7', 'yt_U-rsvXds9ck'];
+  const CHATGPT = ['ig_DdCDFZdRJtG', 'yt_1OmRxol201U'];
+  const story = async (id) => (await q(`select id::text, status::text, published_at, merged_into::text, review_source, review_note, reviewed_at, reviewed_by from stories where id = $1`, [id]))[0];
+  const latest = async (id) => (await q(`select version, passed, editor, models, stats from story_versions where story_id = $1 order by version desc limit 1`, [id]))[0];
+  const postsOf = async (id) => (await q(`select post_id from story_posts where story_id = $1 order by post_id`, [id])).map((r) => r.post_id);
+
+  // Run 1: auto_publish on, auto_merge off. Four new stories; the editor holds one and rejects one.
+  await setSettings({ auto_publish: true, auto_merge: false, merge_min_confidence: 0.7 });
+  writeFixture('grouping', `feed-${edFeed}`, {
+    stories: [
+      { story_id: 'ed-pub', existing_story_id: null, working_title: 'Anthropic threat report', post_ids: [A, B], why: 'test', confidence: 0.8 },
+      { story_id: 'ed-m2', existing_story_id: null, working_title: 'Anthropic blocks research help', post_ids: [D, E, C], why: 'test', confidence: 0.8 },
+      { story_id: 'ed-hold', existing_story_id: null, working_title: 'DeepSeek release', post_ids: DEEPSEEK, why: 'test', confidence: 0.8 },
+      { story_id: 'ed-rej', existing_story_id: null, working_title: 'ChatGPT connectors', post_ids: CHATGPT, why: 'test', confidence: 0.8 },
+    ],
+    unassigned: [],
+    uncertain: [],
+  });
+  await storyFixtures('ed-pub', [A, B], { mainCharacter: 'Anthropic' });
+  await storyFixtures('ed-m2', [D, E, C], { mainCharacter: 'Anthropic' });
+  await storyFixtures('ed-hold', DEEPSEEK, { mainCharacter: 'DeepSeek' });
+  await storyFixtures('ed-rej', CHATGPT);
+  writeFixture('editor', 'ed-hold', { decision: 'hold', reason: 'Test: a person should look first.', confidence: 0.6 });
+  writeFixture('editor', 'ed-rej', { decision: 'reject', reason: 'Test: routine promotion.', confidence: 0.85 });
+
+  let pub;
+  let m2;
+  let held;
+  let rejected;
+  await check('AI editor publishes a new shared-feed story that passes its checks, marked as the AI with its verdict on the version', async () => {
+    const out = await edBuild();
+    assert.equal(out.filter((r) => r.error).length, 0, JSON.stringify(out.filter((r) => r.error)));
+    assert.equal(out.length, 4);
+    assert.ok(out.every((r) => r.isNew && r.passed), JSON.stringify(out));
+    const owner = async (postId) => (await q(`select sp.story_id::text from story_posts sp join stories s on s.id = sp.story_id where s.feed_id = $1 and sp.post_id = $2`, [edFeed, postId]))[0]?.story_id;
+    [pub, m2, held, rejected] = [await owner(A), await owner(D), await owner(DEEPSEEK[0]), await owner(CHATGPT[0])];
+    const s = await story(pub);
+    assert.notEqual(s.published_at, null);
+    assert.equal(s.review_source, 'ai');
+    assert.match(s.review_note, /^AI: /);
+    assert.notEqual(s.reviewed_at, null);
+    assert.equal(s.reviewed_by, null);
+    const v = await latest(pub);
+    assert.equal(v.editor.decision, 'publish');
+    assert.equal(v.editor.confidence, 0.9);
+    assert.equal(typeof v.models.editor, 'string');
+    const [{ n }] = await q(`select count(*)::int as n from cost_events where run_id = $1 and units ->> 'step' = 'editor' and usd = 0`, [runId]);
+    assert.equal(n, 4, 'one $0 cost row per editor call');
+  });
+
+  await check('an editor verdict of hold leaves the story unpublished, marked as the AI', async () => {
+    const s = await story(held);
+    assert.equal(s.published_at, null);
+    assert.notEqual(s.status, 'rejected');
+    assert.equal(s.review_source, 'ai');
+    assert.equal(s.review_note, 'AI: Test: a person should look first.');
+    assert.equal((await latest(held)).editor.decision, 'hold');
+  });
+
+  await check('an editor verdict of reject marks the story rejected and unpublished', async () => {
+    const s = await story(rejected);
+    assert.equal(s.status, 'rejected');
+    assert.equal(s.published_at, null);
+    assert.equal(s.review_source, 'ai');
+    assert.equal((await latest(rejected)).editor.decision, 'reject');
+  });
+
+  const [pairA, pairB] = [pub, m2].sort();
+  const candidate = async () => (await q(`select resolved_at, decision from merge_candidates where story_a = $1 and story_b = $2`, [pairA, pairB]))[0];
+  await check('with auto_merge off, two overlapping stories with the same main entity are only flagged', async () => {
+    const c = await candidate();
+    assert.ok(c, 'the pair is in merge_candidates');
+    assert.equal(c.resolved_at, null);
+    assert.equal(c.decision, null);
+    assert.deepEqual([(await story(pub)).status === 'merged', (await story(m2)).status === 'merged'], [false, false]);
+    assert.equal((await postsOf(pub)).length, 2);
+    assert.equal((await postsOf(m2)).length, 3);
+  });
+
+  // Run 2: auto_merge on. A person has taken over the held story and a new post attaches to it; the
+  // same-story judge is forced to a low-confidence answer.
+  await setSettings({ auto_merge: true });
+  await q(`update stories set review_source = 'human', review_note = 'Test: a person keeps this unpublished', reviewed_at = now() where id = $1`, [held]);
+  writeFixture('grouping', `feed-${edFeed}`, {
+    stories: [{ story_id: 'x1', existing_story_id: held, working_title: 'DeepSeek release', post_ids: ['rd_1wbfrut'], why: 'same release', confidence: 0.9 }],
+    unassigned: [],
+    uncertain: [],
+  });
+  await storyFixtures(held, [...DEEPSEEK, 'rd_1wbfrut'], { mainCharacter: 'DeepSeek' });
+  writeFixture('same_story', `${pairA}_${pairB}`, { same_story: true, keep: 'a', reason: 'Test: maybe the same.', confidence: 0.4 });
+  const pubBefore = await story(pub);
+  const m2Before = await story(m2);
+
+  let second = [];
+  await check('a story a person reviewed is never changed by the AI editor', async () => {
+    second = await edBuild();
+    assert.equal(second.filter((r) => r.error).length, 0, JSON.stringify(second.filter((r) => r.error)));
+    const rebuilt = second.find((r) => r.storyId === held);
+    assert.ok(rebuilt && rebuilt.version === 2 && rebuilt.passed, JSON.stringify(second));
+    const s = await story(held);
+    assert.equal(s.published_at, null);
+    assert.notEqual(s.status, 'rejected');
+    assert.equal(s.review_source, 'human');
+    assert.equal(s.review_note, 'Test: a person keeps this unpublished');
+    assert.equal((await latest(held)).editor, null);
+    const [{ n }] = await q(`select count(*)::int as n from cost_events where run_id = $1 and units ->> 'step' = 'editor' and units ->> 'label' = $2`, [runId, held]);
+    assert.equal(n, 0, 'the editor was not asked');
+  });
+
+  await check('a low-confidence same-story verdict leaves the pair unresolved with the verdict, and merges nothing', async () => {
+    const c = await candidate();
+    assert.equal(c.resolved_at, null);
+    assert.equal(c.decision.same_story, true);
+    assert.equal(c.decision.confidence, 0.4);
+    for (const [id, was, posts] of [[pub, pubBefore, 2], [m2, m2Before, 3]]) {
+      const s = await story(id);
+      assert.notEqual(s.status, 'merged');
+      assert.equal(s.merged_into, null);
+      assert.equal(String(s.published_at), String(was.published_at));
+      assert.equal((await postsOf(id)).length, posts);
+    }
+  });
+
+  // Run 3: the pair is asked again as if new, with the fake judge's default answer (same main entity,
+  // 0.8, keep the story with more posts). Fixtures for the rebuild are written under both ids.
+  await q(`update merge_candidates set decision = null where story_a = $1 and story_b = $2`, [pairA, pairB]);
+  removeFixture('same_story', `${pairA}_${pairB}`);
+  writeFixture('grouping', `feed-${edFeed}`, { stories: [], unassigned: [], uncertain: [] });
+  await storyFixtures(pub, [A, B, C, D, E], { mainCharacter: 'Anthropic' });
+  await storyFixtures(m2, [A, B, C, D, E], { mainCharacter: 'Anthropic' });
+
+  await check('AI merges two overlapping same-entity stories: posts moved, the other marked merged, pair resolved, kept story rebuilt', async () => {
+    const third = await edBuild();
+    assert.equal(third.filter((r) => r.error).length, 0, JSON.stringify(third.filter((r) => r.error)));
+    const rebuilt = third.find((r) => r.storyId === m2);
+    assert.ok(rebuilt && rebuilt.merged && rebuilt.version === 2 && rebuilt.passed, JSON.stringify(third));
+    const absorbed = await story(pub);
+    assert.equal(absorbed.status, 'merged');
+    assert.equal(absorbed.merged_into, m2);
+    assert.equal(absorbed.published_at, null);
+    assert.equal(absorbed.review_source, 'ai');
+    assert.ok(absorbed.review_note.startsWith(`AI merged into ${m2}: `), absorbed.review_note);
+    assert.deepEqual(await postsOf(pub), []);
+    assert.deepEqual(await postsOf(m2), [A, B, C, D, E].sort());
+    const c = await candidate();
+    assert.notEqual(c.resolved_at, null);
+    assert.equal(c.decision.same_story, true);
+    assert.equal(c.decision.kept_id, m2);
+    const kept = await story(m2);
+    assert.equal(kept.status === 'merged', false);
+    assert.equal(String(kept.published_at), String(m2Before.published_at));
+    const v = await latest(m2);
+    assert.equal(v.version, 2);
+    assert.equal(v.stats.posts, 5);
+    assert.equal(v.editor, null, 'an already published story is not judged again');
+  });
 } catch (err) {
   results.push(['FAIL', `setup: ${err.message}`]);
 } finally {
+  // Settings first, so the live pipeline has its own settings back even if a later cleanup step fails.
+  for (const key of SETTING_KEYS) {
+    const old = settingsBefore.find((s) => s.key === key);
+    if (!old) await q('delete from app_settings where key = $1', [key]);
+    else {
+      await q(
+        `insert into app_settings (key, value, updated_at, updated_by) values ($1, $2::jsonb, $3, $4)
+         on conflict (key) do update set value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+        [key, JSON.stringify(old.value), old.updated_at, old.updated_by],
+      );
+    }
+  }
   // Everything this test created goes; stories that were there before get their heat and status back.
   const created = (await q(`select id::text from stories where feed_id = $1`, [feedId])).map((r) => r.id).filter((id) => !beforeIds.has(id));
   if (created.length) await q(`delete from stories where id = any($1::uuid[])`, [created]);
@@ -362,6 +554,10 @@ try {
     else if (old.get(a.alias) !== a.entity_id) await q('update entity_aliases set entity_id = $2 where alias = $1', [a.alias, old.get(a.alias)]);
   }
   if (workspaceId) await q('delete from workspaces where id = $1', [workspaceId]);
+  if (editorWorkspaceId) {
+    await q(`update stories set merged_into = null where feed_id in (select id from feeds where workspace_id = $1)`, [editorWorkspaceId]);
+    await q('delete from workspaces where id = $1', [editorWorkspaceId]);
+  }
   await q('delete from cost_events where run_id = $1', [runId]);
   await q('delete from runs where id = $1', [runId]);
   rmSync(overlay, { recursive: true, force: true });

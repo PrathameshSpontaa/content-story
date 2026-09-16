@@ -45,7 +45,9 @@ Customers can do this themselves: **Following** > add by link or handle. To do i
 ## 2. Re-run a day
 
 A re-run is safe. The day's tracking charge is idempotent per date, and collection skips any
-source collected within `COLLECT_MIN_HOURS` (default 20).
+source collected within most of the collection interval set at **/admin/settings** (23.5 hours
+when collection runs once a day). Set `COLLECT_MIN_HOURS` in the shell only to override that for
+one manual run.
 
 1. See what happened: *admin* **/admin/runs** (status and error of each run), or the worker logs
    filtered by `daily`.
@@ -60,7 +62,7 @@ source collected within `COLLECT_MIN_HOURS` (default 20).
    ```
    Or queue it for the worker instead of running it in the shell:
    `npm run enqueue -- daily --date 2026-09-14`.
-4. To force re-collection of one source inside the `COLLECT_MIN_HOURS` window, clear its
+4. To force re-collection of one source inside that window, clear its
    timestamp first (*psql*), then run step 2:
    ```sql
    update creator_handles set last_collected_at = null where creator_id = '<creator id>';
@@ -72,9 +74,13 @@ source collected within `COLLECT_MIN_HOURS` (default 20).
 
 ## 3. Fix or unpublish a story
 
-While `AUTO_PUBLISH=false`, new stories wait for review.
+The AI editor publishes, holds or rejects each new story that passes its checks, and merges
+stories it judges to be the same. Both are switched at **/admin/settings**. With them off, new
+stories and duplicate pairs wait for you. A decision you make here is final: the AI never
+overrides a story you approved, unpublished, rejected or merged.
 
-1. *admin* **/admin** > the review queue. Filter by Waiting, Published, Rejected or Merged, then
+1. *admin* **/admin** > the review queue. Filter by Needs you, Published by AI, Published by you,
+   Rejected, Merged or Unsure merges, then
    open a story: **/admin/stories/<id>** shows its latest version, checks, version history,
    posts and merge candidates.
 2. **Unpublish**: click **Unpublish** and add a note if you like. The story leaves every feed,
@@ -88,7 +94,7 @@ While `AUTO_PUBLISH=false`, new stories wait for review.
    the source data, and re-run the day (procedure 2). Publish again once a passing version appears
    in the version history.
 
-Keep `AUTO_PUBLISH=false` through the beta (N8).
+The **Needs you** filter lists what the AI held and the merges it was not sure about.
 
 ## 4. Merge two stories
 

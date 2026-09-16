@@ -2,7 +2,7 @@
 // candidates, with approve, reject, unpublish and merge forms.
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { getStoryForReview, listStoriesForReview } from '../../../../../../lib/admin.js';
+import { decidedBy, getStoryForReview, listStoriesForReview } from '../../../../../../lib/admin.js';
 import { PLATFORM_NAMES as P, fmtDay, fmtNum, fmtTime, stripCites } from '../../../../../../lib/format.js';
 import { requireAdmin } from '../../../../../../lib/session.js';
 import ActionForm from '../../../../components/action-form.js';
@@ -12,6 +12,31 @@ import { mergeAction, reviewAction } from '../../actions.js';
 export const dynamic = 'force-dynamic';
 
 const text = (x) => (typeof x === 'string' ? x : JSON.stringify(x));
+
+// Confidence arrives as 0–1; anything above 1 is already a percentage.
+const sure = (c) => {
+  const n = Number(c);
+  if (c == null || !Number.isFinite(n)) return null;
+  return `${Math.round(n > 1 ? n : n * 100)}% sure`;
+};
+const VERDICT_CLASS = { publish: 'ready', hold: 'queued', reject: 'failed' };
+
+// The AI's call on a possible duplicate pair, from this story's side: `self` is this story's id.
+function PairDecision({ c, self }) {
+  const d = c.decision;
+  if (!d) return <span className="sub">{c.resolved_at ? '' : 'No AI decision yet.'}</span>;
+  const keepId = d.kept_id ?? (d.keep === 'a' ? c.story_a : d.keep === 'b' ? c.story_b : null);
+  const keep = keepId ? (keepId === self ? 'keep this one' : 'keep the other') : '';
+  return (
+    <span className="sub verdict">
+      AI: {d.same_story ? 'same story' : 'different stories'}
+      {sure(d.confidence) ? ` · ${sure(d.confidence)}` : ''}
+      {d.same_story && keep ? ` · ${keep}` : ''}
+      {d.reason ? `: ${d.reason}` : ''}
+      {d.resolved_by === 'human' ? (d.kept_separate ? ' · a person kept them separate' : ' · a person resolved it') : ''}
+    </span>
+  );
+}
 
 export async function generateMetadata({ params }) {
   const { id } = await params;
@@ -27,7 +52,8 @@ export default async function ReviewStoryPage({ params, searchParams }) {
   const others = all.filter((s) => s.id !== story.id && !['merged', 'rejected'].includes(s.status));
   const edit = story.feed_edit ?? {};
   const checks = story.checks ?? {};
-  const state = story.status === 'merged' ? 'merged' : story.status === 'rejected' ? 'rejected' : story.published_at ? 'published' : 'waiting';
+  const by = decidedBy(story);
+  const state = story.status === 'merged' ? 'merged' : story.status === 'rejected' ? 'rejected' : story.published_at ? 'published' : by === 'human' ? 'unpublished' : 'needs you';
   const openCandidates = story.candidates.filter((c) => !c.resolved_at);
   const corrected = checks.corrected_quotes ?? checks.corrected ?? [];
   const hidden = checks.hidden_quotes ?? [];
@@ -56,7 +82,7 @@ export default async function ReviewStoryPage({ params, searchParams }) {
         <h1>{story.headline ?? 'Untitled'}</h1>
         {edit.dek ? <p className="dek">{edit.dek}</p> : null}
         <p className="btnrow">
-          <span className={`status ${state === 'published' ? 'ready' : state === 'waiting' ? 'queued' : state === 'rejected' ? 'failed' : ''}`}>{state}</span>
+          <span className={`status ${state === 'published' ? 'ready' : state === 'needs you' ? 'queued' : state === 'rejected' ? 'failed' : ''}`}>{state}</span>
           <span className={`status ${story.passed ? 'ready' : 'failed'}`}>
             v{story.version} {story.passed ? 'passed' : 'failed'}
           </span>
@@ -66,10 +92,24 @@ export default async function ReviewStoryPage({ params, searchParams }) {
             </Link>
           ) : null}
         </p>
-        {story.reviewed_at ? (
+        {by === 'ai' ? (
+          <p className="sub">
+            Decided by <b className="by-ai">AI</b>
+            {story.reviewed_at ? ` on ${fmtTime(story.reviewed_at)}` : ''}
+            {story.review_note && !(story.editor && story.review_note.startsWith('AI: ')) ?` · ${story.review_note}` : ''}
+            <span className="sub">Anything you do here overrides it, and the AI won’t change it back.</span>
+          </p>
+        ) : story.reviewed_at ? (
           <p className="sub">
             Reviewed by {story.reviewed_by_email ?? 'unknown'} on {fmtTime(story.reviewed_at)}
             {story.review_note ? ` · “${story.review_note}”` : ''}
+          </p>
+        ) : null}
+        {story.editor ? (
+          <p className="sub verdict">
+            AI editor on v{story.version}: {story.editor.decision}
+            {sure(story.editor.confidence) ? ` · ${sure(story.editor.confidence)}` : ''}
+            {story.editor.reason ? ` · ${story.editor.reason}` : ''}
           </p>
         ) : null}
       </header>
@@ -169,6 +209,7 @@ export default async function ReviewStoryPage({ params, searchParams }) {
                     <th>Version</th>
                     <th>Run</th>
                     <th>Checks</th>
+                    <th>AI editor</th>
                     <th>Models</th>
                   </tr>
                 </thead>
@@ -182,6 +223,19 @@ export default async function ReviewStoryPage({ params, searchParams }) {
                         <span className="sub">
                           {v.error_count} errors · {v.warning_count} warnings
                         </span>
+                      </td>
+                      <td>
+                        {v.editor ? (
+                          <>
+                            <span className={`status ${VERDICT_CLASS[v.editor.decision] ?? ''}`}>{v.editor.decision}</span>
+                            <span className="sub">
+                              {[sure(v.editor.confidence), v.editor.model].filter(Boolean).join(' · ')}
+                              {v.editor.reason ? <span className="verdict-reason">{v.editor.reason}</span> : null}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="sub">Not asked</span>
+                        )}
                       </td>
                       <td className="summary">
                         {Object.entries(v.models ?? {})
@@ -245,6 +299,7 @@ export default async function ReviewStoryPage({ params, searchParams }) {
                       {c.reason ? ` · ${c.reason}` : ''}
                       {c.resolved_at ? ` · resolved ${fmtDay(c.resolved_at)}` : ''}
                     </span>
+                    <PairDecision c={c} self={story.id} />
                     {!c.resolved_at && story.status !== 'merged' ? (
                       <form action={mergeAction} className="btnrow">
                         <input type="hidden" name="id" value={story.id} />

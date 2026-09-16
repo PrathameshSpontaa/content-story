@@ -22,7 +22,8 @@
     "test:collect": "node scripts/test-collect.js",
     "test:jobs": "node scripts/test-jobs.js",
     "test:notify": "node scripts/test-notify.js",
-    "test:admin": "node scripts/test-admin.js"
+    "test:admin": "node scripts/test-admin.js",
+    "test:refresh": "node scripts/test-refresh.js"
   },
   "keywords": [],
   "author": "",

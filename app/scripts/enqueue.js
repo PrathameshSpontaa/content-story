@@ -1,4 +1,5 @@
-// Sends one job and exits, for Render cron jobs that don't run a worker of their own.
+// Sends one job and exits, for Render cron jobs that don't run a worker of their own. The daily job
+// is keyed by IST date and hour, so a slot is queued once however many times this runs.
 // Usage: node scripts/enqueue.js <daily|alerts|digest|housekeeping> [--date YYYY-MM-DD]
 import { pool } from '../lib/db.js';
 import { requireEnv } from '../lib/env.js';
@@ -21,7 +22,7 @@ const boss = await startBoss({ lightweight: true, log: makeLog('boss') });
 try {
   const data = queue === QUEUES.daily && date ? { date } : {};
   const id = await enqueue(boss, queue, data);
-  log(id ? `sent ${queue} job ${id}${date ? ` for ${date}` : ''}` : `${queue} is already queued${date ? ` for ${date}` : ''}; nothing sent`);
+  log(id ? `sent ${queue} job ${id}${date ? ` for ${date}` : ''}` : `${queue} is already queued${queue === QUEUES.daily ? ' for this IST hour' : ''}${date ? ` (${date})` : ''}; nothing sent`);
 } finally {
   await boss.stop({ graceful: false, close: true });
   await pool.end();

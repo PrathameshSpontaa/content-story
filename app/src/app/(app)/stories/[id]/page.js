@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { cache } from 'react';
-import { PLATFORM_NAMES as P, dayRange, fmtNum, fmtTime, plural, stripCites } from '../../../../../lib/format.js';
+import { PLATFORM_NAMES as P, dayRange, fmtAgo, fmtDay, fmtNum, fmtTime, plural, stripCites } from '../../../../../lib/format.js';
 import { requireSession } from '../../../../../lib/session.js';
 import { MIN_COMMENTS_FOR_PCT, getStory, getStoryContext } from '../../../../../lib/stories.js';
 import CopyButton from '../../../components/copy-button.js';
@@ -302,7 +302,15 @@ export default async function StoryPage({ params }) {
           <p className="kicker">
             <span className="mc">{narrative.main_character?.name}</span>
             <span aria-hidden="true">·</span>
-            <span>{dayRange(story.first_post_at, story.last_post_at)}</span>
+            <span title={`Posts from ${dayRange(story.first_post_at, story.last_post_at)}`}>
+              Started {fmtDay(story.first_post_at)}
+              {story.last_post_at ? (
+                <>
+                  {' · '}
+                  <time dateTime={new Date(story.last_post_at).toISOString()}>updated {fmtAgo(story.last_post_at)}</time>
+                </>
+              ) : null}
+            </span>
           </p>
           <h1>{headline}</h1>
           {edit?.dek ? <p className="dek">{edit.dek}</p> : null}

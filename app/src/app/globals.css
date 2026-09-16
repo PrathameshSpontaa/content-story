@@ -1085,3 +1085,26 @@ details.more .narrative, details.more .ev { margin-top: 10px; }
 @media (max-width: 860px) {
   .rgrid { grid-template-columns: 1fr; }
 }
+
+/* ─── Stories: freshness line, refresh button and the New tag ────────────── */
+.freshness { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 8px; }
+.fresh-line { display: grid; gap: 2px; margin: 0; color: var(--ink-2); font-size: 14.5px; }
+.fresh-msg { color: var(--accent-ink); font-size: 13.5px; }
+.refresh-btn .icon { flex: none; }
+.icon.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .icon.spin { animation: none; } }
+.newtag { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-ink); font-size: 11.5px; font-weight: 700; letter-spacing: 0.02em; line-height: 1.5; }
+
+/* ─── Admin: AI decisions in the review queue, and the settings panel ────── */
+.by-ai { color: var(--link); }
+.verdict { color: var(--ink-2); }
+.verdict-reason { display: block; margin-top: 2px; }
+.table td.decision { min-width: 220px; max-width: 340px; }
+.pairlist { display: grid; gap: 8px; margin: 0; padding-left: 18px; }
+.pairlist a { font-weight: 600; }
+.table td.actions form.pairbtns { display: flex; justify-content: flex-end; margin-left: 0; }
+.setting { display: grid; gap: 4px; }
+.setting-note { margin: 0 0 0 24px; color: var(--ink-3); font-size: 13px; }
+.setting-note.flush { margin: -8px 0 0; }
+.details.schedule { margin-top: 18px; }

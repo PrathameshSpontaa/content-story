@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { dayRange, plural } from '../../../lib/format.js';
+import { dayRange, fmtAgo, isNew, plural } from '../../../lib/format.js';
 import Avatar from './avatar.js';
 import Heat from './heat.js';
 import Icon from './icons.js';
@@ -23,6 +23,7 @@ const listNames = (names) => (names.length <= 2 ? names.join(' and ') : `${names
 export default function StoryCard({ story, variant = 'full', saveAction = null }) {
   const takes = variant === 'compact' ? [] : (story.platform_strip ?? []);
   const faces = (story.creator_names ?? []).slice(0, 3);
+  const now = new Date();
 
   return (
     <article className={`scard ${variant}`}>
@@ -30,7 +31,10 @@ export default function StoryCard({ story, variant = 'full', saveAction = null }
         <p className="kicker">
           <span className="mc">{story.main_character}</span>
           <span aria-hidden="true">·</span>
-          <span>{dayRange(story.first_post_at, story.last_post_at)}</span>
+          <time dateTime={story.last_post_at ? new Date(story.last_post_at).toISOString() : undefined} title={`Posts from ${dayRange(story.first_post_at, story.last_post_at)}`}>
+            Updated {fmtAgo(story.last_post_at, now)}
+          </time>
+          {isNew(story.first_post_at, now) ? <span className="newtag">New</span> : null}
         </p>
         {saveAction ? (
           <form action={saveAction} className="scard-save">

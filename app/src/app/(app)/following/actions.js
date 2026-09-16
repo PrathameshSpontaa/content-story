@@ -1,6 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { requestRefresh } from '../../../../lib/refresh.js';
 import { requireSession } from '../../../../lib/session.js';
 import { LimitError, WatchlistError, addTopic, followCreator, getTarget, removeTarget, setTargetActive, slotUsage } from '../../../../lib/watchlist.js';
 
@@ -27,6 +28,8 @@ export async function followAction({ kind, creatorId, name }) {
     return failure(err);
   }
   refresh();
+  // Start collecting the new follow's posts now. Not awaited: a refused or failed refresh never fails the follow.
+  requestRefresh({ workspaceId, userId: session.user.id, reason: 'follow' }).catch((err) => console.error('[follow] refresh request failed:', err.message));
   const { used, limit } = await slotUsage(workspaceId, kind);
   return { ok: true, lastSlot: used >= limit };
 }

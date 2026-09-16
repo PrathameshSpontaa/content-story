@@ -326,14 +326,10 @@ envVarGroups:
         value: "3"
       - key: GEMINI_DAILY_CAP_USD
         value: "2"
-      - key: COLLECT_MIN_HOURS             # a creator or keyword is not re-collected within this window
-        value: "20"
       - key: COMMENTS_PER_RUN              # comment budget for one collection run
         value: "1500"
       - key: STORY_DORMANT_DAYS            # quiet days before a story goes dormant
         value: "4"
-      - key: AUTO_PUBLISH                  # false: stories wait in the admin review queue
-        value: "false"
       # ── email (Resend). Without RESEND_API_KEY emails are recorded but not sent ──
       - key: RESEND_API_KEY
         sync: false
@@ -387,14 +383,10 @@ envVarGroups:
         value: "10"
       - key: GEMINI_DAILY_CAP_USD
         value: "5"
-      - key: COLLECT_MIN_HOURS
-        value: "20"
       - key: COMMENTS_PER_RUN
         value: "1500"
       - key: STORY_DORMANT_DAYS
         value: "4"
-      - key: AUTO_PUBLISH                  # keep false through the beta (N8: you approve stories)
-        value: "false"
       - key: RESEND_API_KEY
         sync: false
       - key: EMAIL_FROM

@@ -1,12 +1,16 @@
+// The Stories page: a greeting, when stories last updated with a Refresh button, the For you / All /
+// Saved tabs with search, and the story cards.
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { PLATFORM_NAMES, dayRange, fmtNum, plural } from '../../../../lib/format.js';
+import { PLATFORM_NAMES, plural } from '../../../../lib/format.js';
 import { PLATFORMS } from '../../../../lib/pricing.js';
+import { getRefreshStatus } from '../../../../lib/refresh.js';
 import { requireSession } from '../../../../lib/session.js';
-import { getFeed, getFeedCounts, getTotals } from '../../../../lib/stories.js';
+import { getFeed, getFeedCounts } from '../../../../lib/stories.js';
 import { listFollowing } from '../../../../lib/watchlist.js';
 import FilterBar from '../../components/filter-bar.js';
 import Icon from '../../components/icons.js';
+import RefreshControl from '../../components/refresh-control.js';
 import StoryCard from '../../components/story-card.js';
 import { toggleSaveAction } from '../actions.js';
 
@@ -48,15 +52,15 @@ function Empty({ tab, filtered, followingCount, total }) {
     };
   } else if (tab === 'foryou') {
     content = {
-      title: 'Nothing from who you follow this week',
-      text: `None of this week’s ${plural(total, 'story', 'stories')} involve them yet. Follow a few more, or browse everything.`,
+      title: 'Nothing from who you follow yet',
+      text: `None of the latest ${plural(total, 'story', 'stories')} involve them yet. Follow a few more, or browse everything.`,
       actions: [
         { href: '/stories?tab=all', label: 'Browse all stories', primary: true },
         { href: '/following', label: 'Follow more' },
       ],
     };
   } else {
-    content = { title: 'No stories yet', text: 'Stories appear here once this week’s posts are collected and checked.', actions: [] };
+    content = { title: 'No stories yet', text: 'Stories appear here once new posts are collected and checked.', actions: [] };
   }
   return (
     <div className="empty">
@@ -80,7 +84,15 @@ export default async function StoriesPage({ searchParams }) {
   if (!session.workspace.onboardedAt) redirect('/welcome');
   const workspaceId = session.workspace.id;
   const sp = await searchParams;
-  const [following, counts, totals] = await Promise.all([listFollowing(workspaceId), getFeedCounts(workspaceId), getTotals()]);
+  // The refresh status only drives the freshness line; if it can't be read, the page still renders without it.
+  const [following, counts, refreshStatus] = await Promise.all([
+    listFollowing(workspaceId),
+    getFeedCounts(workspaceId),
+    getRefreshStatus(workspaceId).catch((err) => {
+      console.error('[stories] refresh status:', err.message);
+      return null;
+    }),
+  ]);
 
   const follow = following.find((t) => t.id === sp.follow) ?? null;
   const tab = TABS.some((t) => t.id === sp.tab) ? sp.tab : following.length ? 'foryou' : 'all';
@@ -95,7 +107,7 @@ export default async function StoriesPage({ searchParams }) {
   const [main, more] = strong.length ? [strong, weak] : [weak, []];
   const firstName = (session.user.name ?? '').split(' ')[0];
   const tabCount = { foryou: counts.for_you, all: counts.total, saved: counts.saved };
-  const title = follow ? follow.name : tab === 'foryou' ? 'Your stories' : tab === 'saved' ? 'Saved stories' : 'This week in AI & tech';
+  const title = follow ? follow.name : tab === 'foryou' ? 'Your stories' : tab === 'saved' ? 'Saved stories' : 'Latest in AI & tech';
 
   return (
     <div className="page reading">
@@ -105,11 +117,8 @@ export default async function StoriesPage({ searchParams }) {
           {firstName ? `, ${firstName}` : ''}
         </p>
         <h1>{title}</h1>
-        <p className="home-sub">
-          {follow
-            ? `Stories this week that involve ${follow.name}.`
-            : `${dayRange(totals.first_post_at, totals.last_post_at)} · ${fmtNum(totals.posts)} posts and ${fmtNum(totals.comments)} comments from six platforms, grouped into ${plural(counts.total, 'story', 'stories')}.`}
-        </p>
+        <RefreshControl initialStatus={refreshStatus} />
+        {follow ? <p className="home-sub">Stories that involve {follow.name}.</p> : null}
       </header>
 
       {sp.welcome ? (
@@ -118,8 +127,8 @@ export default async function StoriesPage({ searchParams }) {
           <p>
             <b>You’re set up.</b>{' '}
             {counts.for_you
-              ? `${plural(counts.for_you, 'story', 'stories')} this week ${counts.for_you === 1 ? 'involves' : 'involve'} who you follow.`
-              : 'None of this week’s stories involve your picks yet, so here’s everything.'}
+              ? `${plural(counts.for_you, 'story', 'stories')} ${counts.for_you === 1 ? 'involves' : 'involve'} who you follow.`
+              : 'None of the latest stories involve your picks yet, so here’s everything.'}
           </p>
           <Link href="/following">Edit who you follow</Link>
         </div>

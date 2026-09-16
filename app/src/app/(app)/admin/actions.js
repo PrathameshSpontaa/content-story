@@ -1,6 +1,7 @@
 'use server';
 
-// Admin server actions: credit grants, report updates and story review (approve, unpublish, reject, merge).
+// Admin server actions: credit grants, report updates and story review (approve, unpublish, reject, merge,
+// keep separate). Every review decision made here is recorded as a person's (review_source 'human').
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { keepSeparate, mergeStory, rejectStory, setStoryPublished } from '../../../../lib/admin.js';
@@ -118,4 +119,43 @@ export async function mergeAction(formData) {
   refresh(id);
   refresh(otherId);
   redirect(`/admin/stories/${landing}?notice=${encodeURIComponent(notice)}`);
+}
+
+// Quick reject from the queue table.
+export async function rejectAction(formData) {
+  const session = await requireAdmin();
+  const id = String(formData.get('id') ?? '');
+  if (!UUID.test(id)) return;
+  await rejectStory(id, { reviewerId: session.user.id });
+  refresh(id);
+}
+
+// The "Unsure merges" tab: merge one story of a pair into the other, or keep both. Lands back on the
+// tab with a short notice.
+export async function pairAction(formData) {
+  const session = await requireAdmin();
+  const a = String(formData.get('a') ?? '');
+  const b = String(formData.get('b') ?? '');
+  const decision = String(formData.get('decision') ?? '');
+  if (!UUID.test(a) || !UUID.test(b)) redirect('/admin?filter=pairs');
+
+  let notice = '';
+  try {
+    if (decision === 'merge_a_into_b') {
+      await mergeStory(a, b, { reviewerId: session.user.id });
+      notice = 'Merged the first story into the second.';
+    } else if (decision === 'merge_b_into_a') {
+      await mergeStory(b, a, { reviewerId: session.user.id });
+      notice = 'Merged the second story into the first.';
+    } else if (decision === 'keep_separate') {
+      notice = (await keepSeparate(a, b)) ? 'Kept as two stories.' : 'Nothing to resolve.';
+    } else {
+      notice = 'Pick an action.';
+    }
+  } catch (err) {
+    notice = err.message;
+  }
+  refresh(a);
+  refresh(b);
+  redirect(`/admin?filter=pairs&notice=${encodeURIComponent(notice)}`);
 }

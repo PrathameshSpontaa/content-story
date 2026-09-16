@@ -1,5 +1,6 @@
 // Runs the daily job inline, without pg-boss: for a manual run, a re-run of a day, or a cron-only
-// deployment with no worker. Collects first and charges only after collection succeeds; without
+// deployment with no worker. Skips sources collected within most of the settings' interval (or
+// COLLECT_MIN_HOURS when set). Collects first and charges only after collection succeeds; without
 // pipeline/index.js the run fails and charges nothing. Re-running a date charges nothing twice.
 // Usage: node scripts/run-daily.js [--date YYYY-MM-DD] [--dry]
 //   --dry   charge nothing and collect nothing; print what each workspace would be charged

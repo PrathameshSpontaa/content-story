@@ -59,14 +59,15 @@ const spanLimit = (spanMs, short, mid, long) => (spanMs <= DAY ? short : spanMs 
 
 // ---------- what to collect ----------
 
-// Every active target across every workspace, folded into one list per kind. A creator tracked by
-// five workspaces appears once with the union of their platforms.
-export async function loadTargets() {
+// Every active target across every workspace (or one workspace's, for an on-demand refresh), folded
+// into one list per kind. A creator tracked by five workspaces appears once with the union of their platforms.
+export async function loadTargets(workspaceId = null) {
   const { rows } = await pool.query(
     `select t.kind::text as kind, t.creator_id, t.query, array_agg(distinct p)::text[] as platforms
        from tracking_targets t, unnest(t.platforms) p
-      where t.active
+      where t.active and ($1::uuid is null or t.workspace_id = $1::uuid)
       group by t.kind, t.creator_id, t.query`,
+    [workspaceId],
   );
   const creators = new Map();
   const communities = new Map();
@@ -275,7 +276,8 @@ async function commentPass({ posts, plan, budget, runId, workspaceId, log }) {
   for (const r of results) if (!r.error) raw[r.job.platform] = [...(raw[r.job.platform] ?? []), ...r.items];
   const { comments } = normalizeComments(raw, { posts });
   const saved = await tx((client) => saveComments(client, comments));
-  return { comments: comments.length, newComments: saved.inserted, newIds: saved.newIds, usd: results.reduce((s, r) => s + (r.usd ?? 0), 0), jobs: jobs.length };
+  const capped = results.find((r) => r.capped)?.capped ?? null;
+  return { comments: comments.length, newComments: saved.inserted, newIds: saved.newIds, usd: results.reduce((s, r) => s + (r.usd ?? 0), 0), jobs: jobs.length, capped };
 }
 
 // ---------- running and saving ----------
@@ -291,7 +293,7 @@ async function runAll(jobs, { runId, workspaceId, log, concurrency = 3 }) {
         results.push({ job, items, usd: usd ?? 0, captureId, status });
       } catch (err) {
         log(`[${job.platform}/${job.label}] failed: ${err.message}`);
-        results.push({ job, items: [], usd: 0, error: err.message });
+        results.push({ job, items: [], usd: 0, error: err.message, capped: err?.name === 'SpendCapReached' ? err : null });
       }
     }
   };
@@ -420,12 +422,14 @@ const markCollected = (key, platform, at) =>
     [key, platform, at],
   );
 
-// The daily pass. Options beyond runId and log exist for tests: minHours (skip handles collected
-// this recently; env COLLECT_MIN_HOURS, default 20), windowDays (how far back a never-collected
-// handle goes; default 7), commentBudget (env COMMENTS_PER_RUN, default 1500), skipKeywords.
-export async function collectDaily({ runId, log = console.log, minHours = envInt('COLLECT_MIN_HOURS', 20), windowDays = 7, commentBudget = envInt('COMMENTS_PER_RUN', 1500), skipKeywords = false } = {}) {
+// The scheduled pass, or with workspaceId one workspace's on-demand refresh (same shared cache).
+// minHours skips sources collected this recently (the scheduled run passes it from the settings;
+// otherwise env COLLECT_MIN_HOURS, default 20). For tests: windowDays (how far back a
+// never-collected handle goes; default 7), commentBudget (env COMMENTS_PER_RUN, default 1500),
+// skipKeywords. `capReached` in the result is the spend-cap error if any Apify call hit the cap.
+export async function collectDaily({ runId, workspaceId = null, log = console.log, minHours = envInt('COLLECT_MIN_HOURS', 20), windowDays = 7, commentBudget = envInt('COMMENTS_PER_RUN', 1500), skipKeywords = false } = {}) {
   const now = Date.now();
-  const targets = await loadTargets();
+  const targets = await loadTargets(workspaceId);
   const wanted = new Map(targets.creators.map((c) => [c.creator_id, new Set(c.platforms)]));
   const handles = await loadHandles();
   const since = (h) => (h.last_collected_at ? Math.max(Date.parse(h.last_collected_at), now - 30 * DAY) : now - windowDays * DAY);
@@ -438,12 +442,13 @@ export async function collectDaily({ runId, log = console.log, minHours = envInt
   const { rows: subRows } = await pool.query(`select query_key, last_collected_at from query_collections where platform = 'reddit' and query_key = any($1::text[])`, [targets.communities.map(subKey)]);
   const subLast = new Map(subRows.map((r) => [r.query_key, Date.parse(r.last_collected_at)]));
   const dueCommunities = targets.communities.filter((c) => !(subLast.has(subKey(c)) && now - subLast.get(subKey(c)) < minHours * HOUR));
-  log(`daily: ${targets.creators.length} creators (${due.length} handles due of ${handles.filter((h) => wanted.get(h.creator_id)?.has(h.platform)).length}), ${dueCommunities.length} of ${targets.communities.length} subreddits due, ${targets.keywords.length} keywords`);
+  log(`${workspaceId ? `refresh ${workspaceId}` : 'daily'} (sources older than ${minHours}h): ${targets.creators.length} creators (${due.length} handles due of ${handles.filter((h) => wanted.get(h.creator_id)?.has(h.platform)).length}), ${dueCommunities.length} of ${targets.communities.length} subreddits due, ${targets.keywords.length} keywords`);
 
   const jobs = postJobs({ byPlatform, communities: dueCommunities, now, since });
   for (const j of jobs) log(`  ${`${j.platform}/${j.label}`.padEnd(18)} ~$${j.estimate.toFixed(3)} cap $${j.cap}  ${j.actor}`);
-  const totals = { handles: 0, communities: 0, posts: 0, comments: 0, usd: 0, newPosts: 0, newComments: 0, postIds: [], newPostIds: [], newCommentIds: [], capturedAt: [], captureIds: [] };
+  const totals = { handles: 0, communities: 0, posts: 0, comments: 0, usd: 0, newPosts: 0, newComments: 0, postIds: [], newPostIds: [], newCommentIds: [], capturedAt: [], captureIds: [], capReached: null };
   const add = (r) => {
+    totals.capReached ??= r.capped ?? r.results?.find((x) => x.capped)?.capped ?? null;
     totals.usd += r.usd;
     totals.captureIds.push(...r.captureIds);
     totals.capturedAt.push(r.capturedAt);
@@ -495,6 +500,7 @@ export async function collectDaily({ runId, log = console.log, minHours = envInt
   totals.newComments += pass.newComments;
   totals.newCommentIds.push(...pass.newIds);
   totals.usd += pass.usd;
+  totals.capReached ??= pass.capped;
   log(`comments pass: ${pass.jobs} jobs, ${pass.comments} comments (${pass.newComments} new)`);
   totals.usd = Math.round(totals.usd * 1e6) / 1e6;
   return totals;
@@ -535,6 +541,7 @@ async function searchCollect({ runId, workspaceId = null, query, platforms, date
     capturedAt: r.capturedAt,
     captureIds: r.captureIds,
     usd: Math.round((r.usd + pass.usd) * 1e6) / 1e6,
+    capped: r.results.find((x) => x.capped)?.capped ?? pass.capped ?? null,
   };
 }
 

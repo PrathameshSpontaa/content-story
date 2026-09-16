@@ -1,11 +1,11 @@
-// Operator views: every workspace, credit grants, the story review queue (approve, reject, merge)
-// and the operations dashboard (runs, spend, margin, failed emails). Pages call these only after requireAdmin().
+// Operator views: every workspace, credit grants, the story review queue (an audit of the AI editor's
+// publish and merge decisions, with overrides), operator settings and the operations dashboard (runs,
+// spend, margin, failed emails). Pages call these only after requireAdmin().
 import { pool, tx } from './db.js';
+import { saveSettings } from './settings.js';
 
 const UUID = /^[0-9a-f-]{36}$/i;
 const isUuid = (v) => UUID.test(String(v ?? ''));
-
-export const REVIEW_FILTERS = { all: 'All', unreviewed: 'Waiting', published: 'Published', rejected: 'Rejected', merged: 'Merged' };
 
 // Daily spend caps and the credit rule of thumb come from the environment; defaults match LAUNCH_PLAN.md.
 export const caps = () => ({
@@ -24,7 +24,8 @@ export async function adminOverview() {
              (select count(*)::int from reports where status in ('queued', 'in_progress')) as open_reports,
              (select count(*)::int from tracking_targets where active) as active_targets,
              (select count(*)::int from stories s join feeds f on f.id = s.feed_id and f.workspace_id is null
-               where s.published_at is null and s.status not in ('merged', 'rejected')) as waiting_review,
+               where s.published_at is null and s.status not in ('merged', 'rejected') and s.review_source is distinct from 'human'
+                 and exists (select 1 from story_versions v where v.story_id = s.id)) as needs_you,
              (select count(*)::int from runs where status = 'failed' and started_at > now() - interval '7 days') as failed_runs`),
     pool.query(`
       select w.id, w.name, w.created_at, b.balance::int as balance, b.held::int as held,
@@ -43,13 +44,55 @@ export async function adminOverview() {
 }
 
 // ─── Review queue ───────────────────────────────────────────────────────────
+// The AI editor publishes, holds or rejects new shared-feed stories and merges duplicates on its own
+// (settings auto_publish and auto_merge). The queue audits those decisions and collects what's left
+// for a person. A person's decision (review_source 'human') is final; the AI never overrides it.
+
+export const REVIEW_FILTERS = {
+  needs: 'Needs you',
+  ai_published: 'Published by AI',
+  human_published: 'Published by you',
+  rejected: 'Rejected',
+  merged: 'Merged',
+  pairs: 'Unsure merges',
+  all: 'All',
+};
+
+// Who made the last decision on a story: 'ai', 'human', or null when nobody has. Stories reviewed
+// before the AI editor existed have a reviewer but no review_source, so they count as a person's.
+export const decidedBy = (s) => s.review_source ?? (s.reviewed_at || s.reviewed_by ? 'human' : null);
+
+// Why a story in "Needs you" is there: the AI held it, its checks failed, AI publishing is off, or the
+// AI never decided (its call failed or hasn't run yet).
+export function needsYouReason(s, { autoPublish = true } = {}) {
+  if (s.editor?.decision === 'hold') return 'AI held it';
+  if (!s.passed) return 'Checks failed';
+  if (!autoPublish && s.review_source !== 'ai') return 'AI publishing is off';
+  if (!s.editor) return 'No AI decision';
+  return 'Waiting';
+}
+
+// Live, unpublished and not decided by a person. That covers every case above: a story the AI publishes
+// leaves this list, one it rejects or merges changes status, and one a person unpublished stays out.
+const NEEDS_YOU = `s.published_at is null and s.status not in ('merged', 'rejected') and s.review_source is distinct from 'human'`;
+const REVIEW_WHERE = {
+  needs: NEEDS_YOU,
+  unreviewed: NEEDS_YOU,
+  ai_published: `s.published_at is not null and s.review_source = 'ai'`,
+  human_published: `s.published_at is not null and s.review_source is distinct from 'ai'`,
+  published: 's.published_at is not null',
+  rejected: `s.status = 'rejected'`,
+  merged: `s.status = 'merged'`,
+};
 
 const LATEST_VERSION = `join lateral (select * from story_versions v where v.story_id = s.id order by v.version desc limit 1) v on true`;
+const HEADLINE_OF = (id) =>
+  `(select coalesce(hv.feed_edit ->> 'headline', hv.written ->> 'headline') from story_versions hv where hv.story_id = ${id} order by hv.version desc limit 1)`;
 const STORY_COLUMNS = `
   s.id, s.status, s.heat, s.category, s.published_at, s.merged_into, s.created_at,
-  s.review_note, s.reviewed_at, s.reviewed_by,
+  s.review_note, s.reviewed_at, s.reviewed_by, s.review_source,
   coalesce(v.feed_edit ->> 'headline', v.written ->> 'headline') as headline,
-  v.version, v.passed, v.created_at as version_at,
+  v.version, v.passed, v.created_at as version_at, v.editor,
   (v.stats ->> 'sources')::int as sources,
   (v.stats ->> 'creators')::int as creators,
   (v.stats ->> 'platforms')::int as platforms,
@@ -60,17 +103,13 @@ const STORY_COLUMNS = `
   (select count(*)::int from story_posts sp where sp.story_id = s.id) as post_count`;
 
 // Every story in the shared feed with its newest version: unpublished first (newest run first),
-// then published by heat. `filter` narrows to one state.
+// then published by heat. `filter` is a REVIEW_FILTERS key ('unreviewed' and 'published' still work).
 export async function listStoriesForReview(filter = 'all') {
-  const where = {
-    unreviewed: `s.published_at is null and s.status not in ('merged', 'rejected')`,
-    published: 's.published_at is not null',
-    rejected: `s.status = 'rejected'`,
-    merged: `s.status = 'merged'`,
-  }[filter];
+  const where = REVIEW_WHERE[filter];
   const { rows } = await pool.query(`
     select ${STORY_COLUMNS},
-           (select u.email from users u where u.id = s.reviewed_by) as reviewed_by_email
+           (select u.email from users u where u.id = s.reviewed_by) as reviewed_by_email,
+           case when s.merged_into is not null then ${HEADLINE_OF('s.merged_into')} end as merged_into_headline
       from stories s
       join feeds f on f.id = s.feed_id and f.workspace_id is null
       ${LATEST_VERSION}
@@ -80,16 +119,51 @@ export async function listStoriesForReview(filter = 'all') {
   return rows;
 }
 
-// One story with everything a reviewer needs: latest version in full, version history, posts and
-// merge candidates. Any feed, any state; null when the id is unknown.
+// How many shared-feed stories each tab holds, for the tab counts and the default tab.
+export async function reviewCounts() {
+  const keys = ['needs', 'ai_published', 'human_published', 'rejected', 'merged'];
+  const { rows } = await pool.query(`
+    select count(*)::int as "all", ${keys.map((k) => `count(*) filter (where ${REVIEW_WHERE[k]})::int as ${k}`).join(', ')}
+      from stories s
+      join feeds f on f.id = s.feed_id and f.workspace_id is null
+      ${LATEST_VERSION}`);
+  return rows[0];
+}
+
+// Possible duplicates in the shared feed a person should look at: unresolved pairs of live stories
+// where the AI gave no decision or was less sure than merge_min_confidence. With auto_merge off,
+// every unresolved pair is flagged.
+export async function listUnsureMergePairs({ minConfidence = 0.7, autoMerge = true } = {}) {
+  const { rows } = await pool.query(
+    `select mc.story_a, mc.story_b, mc.reason, mc.decision, mc.created_at,
+            a.status as a_status, a.heat as a_heat, a.published_at as a_published_at,
+            b.status as b_status, b.heat as b_heat, b.published_at as b_published_at,
+            ${HEADLINE_OF('a.id')} as a_headline,
+            ${HEADLINE_OF('b.id')} as b_headline
+       from merge_candidates mc
+       join stories a on a.id = mc.story_a
+       join stories b on b.id = mc.story_b
+       join feeds f on f.id = a.feed_id and f.workspace_id is null
+      where mc.resolved_at is null
+        and a.status not in ('merged', 'rejected') and b.status not in ('merged', 'rejected')
+        and (not $1::boolean or mc.decision is null or mc.decision ->> 'confidence' is null
+             or (mc.decision ->> 'confidence')::float < $2::float)
+      order by mc.created_at desc`,
+    [Boolean(autoMerge), Number(minConfidence)],
+  );
+  return rows;
+}
+
+// One story with everything a reviewer needs: latest version in full, version history (with the AI
+// editor's verdict on each), posts and merge candidates (with the AI's merge decision). Any feed, any
+// state; null when the id is unknown.
 export async function getStoryForReview(id) {
   if (!isUuid(id)) return null;
   const { rows } = await pool.query(
     `select ${STORY_COLUMNS}, f.workspace_id as feed_workspace_id, f.name as feed_name,
             v.narrative, v.stats, v.written, v.platform_takes, v.feed_edit, v.checks, v.models,
             (select u.email from users u where u.id = s.reviewed_by) as reviewed_by_email,
-            (select coalesce(mv.feed_edit ->> 'headline', mv.written ->> 'headline') from story_versions mv
-              where mv.story_id = s.merged_into order by mv.version desc limit 1) as merged_into_headline
+            ${HEADLINE_OF('s.merged_into')} as merged_into_headline
        from stories s
        join feeds f on f.id = s.feed_id
        ${LATEST_VERSION}
@@ -100,7 +174,7 @@ export async function getStoryForReview(id) {
   if (!story) return null;
   const [versions, posts, candidates] = await Promise.all([
     pool.query(
-      `select id, version, created_at, passed, models,
+      `select id, version, created_at, passed, models, editor,
               coalesce(jsonb_array_length(checks -> 'errors'), 0)::int as error_count,
               coalesce(jsonb_array_length(checks -> 'warnings'), 0)::int as warning_count
          from story_versions where story_id = $1 order by version desc`,
@@ -115,11 +189,10 @@ export async function getStoryForReview(id) {
       [id],
     ),
     pool.query(
-      `select mc.reason, mc.created_at, mc.resolved_at,
+      `select mc.story_a, mc.story_b, mc.reason, mc.decision, mc.created_at, mc.resolved_at,
               case when mc.story_a = $1 then mc.story_b else mc.story_a end as other_id,
               o.status as other_status, o.heat as other_heat, o.published_at as other_published_at,
-              (select coalesce(ov.feed_edit ->> 'headline', ov.written ->> 'headline') from story_versions ov
-                where ov.story_id = o.id order by ov.version desc limit 1) as other_headline,
+              ${HEADLINE_OF('o.id')} as other_headline,
               exists (select 1 from story_versions pv where pv.story_id = o.id and pv.passed) as other_has_passed_version
          from merge_candidates mc
          join stories o on o.id = case when mc.story_a = $1 then mc.story_b else mc.story_a end
@@ -131,12 +204,15 @@ export async function getStoryForReview(id) {
   return { ...story, versions: versions.rows, posts: posts.rows, candidates: candidates.rows };
 }
 
+// Every decision made here is a person's: it sets review_source 'human', which the AI never overrides.
 const review = (client, storyId, reviewerId, note) =>
-  client.query(`update stories set reviewed_at = now(), reviewed_by = $2, review_note = coalesce(nullif($3, ''), review_note) where id = $1`, [
-    storyId,
-    isUuid(reviewerId) ? reviewerId : null,
-    String(note ?? '').trim().slice(0, 500),
-  ]);
+  client.query(
+    `update stories set reviewed_at = now(), reviewed_by = $2, review_source = 'human', review_note = coalesce(nullif($3, ''), review_note) where id = $1`,
+    [storyId, isUuid(reviewerId) ? reviewerId : null, String(note ?? '').trim().slice(0, 500)],
+  );
+
+// A pair a person resolves keeps the AI's decision and records that a person closed it.
+const RESOLVED_BY_HUMAN = `resolved_at = now(), decision = coalesce(decision, '{}'::jsonb) || jsonb_build_object('resolved_by', 'human')`;
 
 // Approve = publish. Only a story with a version that passed every check can be published, and a
 // merged story never can. A rejected story that is approved again becomes active.
@@ -167,6 +243,7 @@ export async function rejectStory(storyId, { reviewerId = null, note = '' } = {}
 
 // Folds `storyId` into `targetId`: its posts move over (duplicates skipped), it leaves the feed, and
 // the pair's merge candidate is resolved. Throws with a plain message when the pair can't merge.
+// The merged story becomes a person's decision; the target keeps whoever decided it.
 export async function mergeStory(storyId, targetId, { reviewerId = null, note = '' } = {}) {
   if (!isUuid(storyId) || !isUuid(targetId)) throw new Error('Pick a story to merge into.');
   if (storyId === targetId) throw new Error('A story can’t be merged into itself.');
@@ -189,7 +266,7 @@ export async function mergeStory(storyId, targetId, { reviewerId = null, note = 
     // Anything that pointed at the merged story now points at the target.
     await client.query(`update stories set merged_into = $2 where merged_into = $1`, [storyId, targetId]);
     await client.query(
-      `update merge_candidates set resolved_at = now()
+      `update merge_candidates set ${RESOLVED_BY_HUMAN}
         where resolved_at is null and ((story_a = $1 and story_b = $2) or (story_a = $2 and story_b = $1))`,
       [storyId, targetId],
     );
@@ -198,15 +275,36 @@ export async function mergeStory(storyId, targetId, { reviewerId = null, note = 
   });
 }
 
-// "Keep separate": the pair stays two stories and the candidate stops showing.
+// "Keep separate": the pair stays two stories and the candidate stops showing. Its decision records
+// that a person kept them apart.
 export async function keepSeparate(storyA, storyB) {
   if (!isUuid(storyA) || !isUuid(storyB)) return false;
   const { rowCount } = await pool.query(
-    `update merge_candidates set resolved_at = now()
+    `update merge_candidates set ${RESOLVED_BY_HUMAN} || jsonb_build_object('kept_separate', true)
       where resolved_at is null and ((story_a = $1 and story_b = $2) or (story_a = $2 and story_b = $1))`,
     [storyA, storyB],
   );
   return rowCount > 0;
+}
+
+// ─── Settings ───────────────────────────────────────────────────────────────
+
+// The admin settings panel saves one section at a time. An unticked checkbox isn't sent, so a missing
+// boolean saves as off; a missing number fails validation.
+export const SETTINGS_SECTIONS = {
+  timing: ['refresh_every_hours', 'refresh_start_hour_ist', 'digest_hour_ist'],
+  review: ['auto_publish', 'auto_merge', 'merge_min_confidence'],
+  on_demand: ['on_demand_enabled', 'on_demand_cooldown_minutes', 'on_demand_max_per_day'],
+};
+
+// `values` is FormData or a plain object. Every value is checked before any is saved (saveSettings
+// coerces first) and a bad one throws a plain message. Returns the full settings after the save.
+export async function saveSettingsSection(section, values, { userId = null } = {}) {
+  const keys = SETTINGS_SECTIONS[section];
+  if (!keys) throw new Error('Unknown settings section.');
+  const read = (key) => (typeof values?.get === 'function' ? values.get(key) : values?.[key]);
+  const patch = Object.fromEntries(keys.map((key) => [key, read(key) ?? '']));
+  return saveSettings(patch, { userId: isUuid(userId) ? userId : null });
 }
 
 // ─── Operations ─────────────────────────────────────────────────────────────

@@ -51,10 +51,9 @@ const VARS = [
   { key: 'GEMINI_STRONG_MODEL', optional: ['worker'], def: 'gemini-3.8-flash' },
   { key: 'APIFY_DAILY_CAP_USD', optional: ['worker'], def: '10', note: 'render.yaml: 3 staging, 10 production' },
   { key: 'GEMINI_DAILY_CAP_USD', optional: ['worker'], def: '5', note: 'render.yaml: 2 staging, 5 production' },
-  { key: 'COLLECT_MIN_HOURS', optional: ['worker'], def: '20' },
+  { key: 'COLLECT_MIN_HOURS', optional: ['worker'], def: '', note: 'leave unset on Render: the admin settings interval decides; set only to override for a manual run' },
   { key: 'COMMENTS_PER_RUN', optional: ['worker'], def: '1500', note: 'comment budget per collection run' },
   { key: 'STORY_DORMANT_DAYS', optional: ['worker'], def: '4' },
-  { key: 'AUTO_PUBLISH', optional: ['worker'], def: 'false' },
   { key: 'DRYRUN_DATA', optional: ['worker'], def: '', note: 'local only, with PIPELINE_PROVIDER=fake' },
 
   // email (Resend). Without RESEND_API_KEY emails are logged, not sent.
