@@ -1,12 +1,16 @@
 // Gemini client for the pipeline: JSON output, retries with backoff, a cost_events row for every call,
 // and a fake mode (PIPELINE_PROVIDER=fake) that answers from the dry-run fixtures so tests never pay.
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import https from 'node:https';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pool } from '../lib/db.js';
 import { requireEnv } from '../lib/env.js';
 
 const API = 'https://generativelanguage.googleapis.com/v1beta';
+// How long one call may take. The strong model can think for more than 5 minutes over a big
+// grouping input, and Node's fetch gives up on any reply slower than that, so calls use node:https.
+const REQUEST_TIMEOUT_MS = 12 * 60_000;
 const PROMPTS = resolve(dirname(fileURLToPath(import.meta.url)), 'prompts');
 const dryrunData = () => process.env.DRYRUN_DATA || 'D:/Projects/Codeamesh/POC/Content-Story/dryrun/data';
 
@@ -50,13 +54,40 @@ export function parseJsonLoose(raw, label = 'input') {
   }
 }
 
+// One HTTPS call with no limit but REQUEST_TIMEOUT_MS, start to finish. A connection that fails or
+// times out throws with status 'network'.
+function httpsCall(url, { method = 'GET', headers = {}, body = null, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+  return new Promise((resolvePromise, reject) => {
+    let timer;
+    const fail = (err) => {
+      clearTimeout(timer);
+      const wrapped = new Error(`Gemini connection failed: ${err.message}`);
+      wrapped.status = 'network';
+      wrapped.code = err.code;
+      reject(wrapped);
+    };
+    const req = https.request(url, { method, headers: body == null ? headers : { ...headers, 'Content-Length': Buffer.byteLength(body) } }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        clearTimeout(timer);
+        resolvePromise({ status: res.statusCode, ok: res.statusCode >= 200 && res.statusCode < 300, text: Buffer.concat(chunks).toString('utf8') });
+      });
+      res.on('error', fail);
+    });
+    timer = setTimeout(() => req.destroy(Object.assign(new Error(`no reply after ${Math.round(timeoutMs / 1000)}s`), { code: 'ETIMEDOUT' })), timeoutMs);
+    req.on('error', fail);
+    req.end(body ?? undefined);
+  });
+}
+
 async function request(method, path, body) {
-  const res = await fetch(`${API}${path}`, {
+  const res = await httpsCall(`${API}${path}`, {
     method,
     headers: { 'x-goog-api-key': requireEnv('GEMINI_API_KEY'), ...(body ? { 'Content-Type': 'application/json' } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
+    body: body ? JSON.stringify(body) : null,
   });
-  const text = await res.text();
+  const text = res.text;
   if (!res.ok) {
     const err = new Error(`Gemini ${res.status}: ${text.slice(0, 400)}`);
     err.status = res.status;
@@ -159,8 +190,9 @@ function fakeAnswer({ step, label, user }) {
   throw new Error(`fake mode: no fixture for ${step}/${label} (looked in ${candidates.join(', ')})`);
 }
 
-// Sends one prompt and returns the parsed JSON. Rate limits, server errors, empty replies and broken
-// JSON are retried with backoff; every call, paid or fake, leaves a cost_events row.
+// Sends one prompt and returns the parsed JSON. Rate limits, server errors, dropped connections, empty
+// replies and broken JSON are retried with backoff (a timed-out call once, since each one is long);
+// every call, paid or fake, leaves a cost_events row.
 export async function generateJson({ model, system, user, step, label, runId = null, workspaceId = null, maxOutputTokens = 32768 }) {
   if (isFake()) {
     const out = fakeAnswer({ step, label, user });
@@ -186,11 +218,12 @@ export async function generateJson({ model, system, user, step, label, runId = n
       }
       return parseJsonLoose(text, `${step}/${label}`);
     } catch (err) {
+      const network = err.status === 'network' && (err.code !== 'ETIMEDOUT' || attempt < 2);
       const retryable =
-        !err.dailyQuota && (err.status === 429 || (typeof err.status === 'number' && err.status >= 500) || err.status === 'empty' || /Bad JSON/.test(err.message));
+        !err.dailyQuota && (err.status === 429 || (typeof err.status === 'number' && err.status >= 500) || err.status === 'empty' || network || /Bad JSON/.test(err.message));
       if (!retryable || attempt >= 6) throw err;
       const waitMs = Math.min(120_000, Math.max(err.retryDelayMs ?? 0, 2 ** attempt * 2000));
-      console.log(`  [${step}/${label}] ${err.message.slice(0, 120)}, retry ${attempt} in ${waitMs / 1000}s`);
+      console.log(`  [${step}/${label}] ${err.message.replace(/\s+/g, ' ').slice(0, 160)}, retry ${attempt} in ${waitMs / 1000}s`);
       await new Promise((r) => setTimeout(r, waitMs));
     }
   }

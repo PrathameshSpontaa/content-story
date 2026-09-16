@@ -742,6 +742,7 @@ export async function buildStories({ runId = null, feedId, postIds = null, singl
   } else if (windowIds.length) {
     const windowWorld = await loadWorld(windowIds);
     const live = existing.filter((s) => LIVE.includes(s.status));
+    log(`[stories] grouping ${windowIds.length} posts with ${live.length} live stories on ${MODELS.strong()}; this call can take several minutes`);
     const out = await ask(ctx, { step: 'grouping', prompt: '03_story_grouping', input: groupingInput(windowWorld, windowIds, live), label: `feed-${feed.id}` });
     plans = planFromGrouping(out, windowIds, live).filter((p) => {
       if (p.existing || enoughForStory(windowWorld, p.newPostIds)) return true;

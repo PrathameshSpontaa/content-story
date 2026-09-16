@@ -186,6 +186,7 @@ export async function understandNewPosts({ runId = null, postIds = null, force =
     [postIds, force && postIds != null],
   );
   if (cardPosts.length) {
+    log(`cards: reading ${cardPosts.length} posts in batches of ${BATCH.cards}`);
     const system = readPrompt(gemini, '01_story_card');
     const batches = await inBatches(cardPosts, BATCH.cards, async (batch, n) => {
       const input = batch.map((p) => ({
@@ -230,6 +231,7 @@ export async function understandNewPosts({ runId = null, postIds = null, force =
     [postIds, force && postIds != null],
   );
   if (groupPosts.length) {
+    log(`groups: sorting comments on ${groupPosts.length} posts in batches of ${BATCH.groups}`);
     const system = readPrompt(gemini, '02_comment_groups');
     const { rows: allComments } = await pool.query(
       'select id, post_id, parent_id, author, is_creator, likes, text from comments where post_id = any($1::text[]) order by likes desc',
