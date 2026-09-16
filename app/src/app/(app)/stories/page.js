@@ -1,9 +1,9 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { PLATFORM_NAMES, dayRange, fmtNum, plural } from '../../../../lib/format.js';
+import { PLATFORM_NAMES, plural } from '../../../../lib/format.js';
 import { PLATFORMS } from '../../../../lib/pricing.js';
 import { requireSession } from '../../../../lib/session.js';
-import { getFeed, getFeedCounts, getTotals } from '../../../../lib/stories.js';
+import { getFeed, getFeedCounts } from '../../../../lib/stories.js';
 import { listFollowing } from '../../../../lib/watchlist.js';
 import FilterBar from '../../components/filter-bar.js';
 import Icon from '../../components/icons.js';
@@ -14,7 +14,6 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Stories' };
 
 const TABS = [
-  { id: 'foryou', label: 'For you' },
   { id: 'all', label: 'All stories' },
   { id: 'saved', label: 'Saved' },
 ];
@@ -37,23 +36,11 @@ function Empty({ tab, filtered, followingCount, total }) {
     content = { title: 'No stories match', text: 'Try a different search or platform.', actions: [{ href: `/stories?tab=${tab}`, label: 'Clear search', primary: true }] };
   } else if (tab === 'saved') {
     content = { title: 'Nothing saved yet', text: 'Use the bookmark on any story to keep it here.', actions: [{ href: '/stories?tab=all', label: 'Browse all stories', primary: true }] };
-  } else if (tab === 'foryou' && !followingCount) {
+  } else if (!followingCount && !total) {
     content = {
       title: 'Choose who to follow',
       text: 'Your stories come from the creators, subreddits and brands you follow. It takes a minute.',
-      actions: [
-        { href: '/following', label: 'Choose who to follow', primary: true },
-        { href: '/stories?tab=all', label: 'Browse all stories' },
-      ],
-    };
-  } else if (tab === 'foryou') {
-    content = {
-      title: 'Nothing from who you follow this week',
-      text: `None of this week’s ${plural(total, 'story', 'stories')} involve them yet. Follow a few more, or browse everything.`,
-      actions: [
-        { href: '/stories?tab=all', label: 'Browse all stories', primary: true },
-        { href: '/following', label: 'Follow more' },
-      ],
+      actions: [{ href: '/following', label: 'Choose who to follow', primary: true }],
     };
   } else {
     content = { title: 'No stories yet', text: 'Stories appear here once this week’s posts are collected and checked.', actions: [] };
@@ -80,13 +67,18 @@ export default async function StoriesPage({ searchParams }) {
   if (!session.workspace.onboardedAt) redirect('/welcome');
   const workspaceId = session.workspace.id;
   const sp = await searchParams;
-  const [following, counts, totals] = await Promise.all([listFollowing(workspaceId), getFeedCounts(workspaceId), getTotals()]);
+  const [following, counts] = await Promise.all([listFollowing(workspaceId), getFeedCounts(workspaceId)]);
 
   const follow = following.find((t) => t.id === sp.follow) ?? null;
-  const tab = TABS.some((t) => t.id === sp.tab) ? sp.tab : following.length ? 'foryou' : 'all';
+  const tab = TABS.some((t) => t.id === sp.tab) ? sp.tab : 'all';
   const platform = PLATFORMS.includes(sp.platform) ? sp.platform : '';
   const q = typeof sp.q === 'string' ? sp.q.trim().slice(0, 80) : '';
-  const scope = follow ? 'all' : tab === 'foryou' ? 'watchlist' : tab;
+
+  // All stories = stories that involve who you follow. With nobody followed, or nothing
+  // from them this week, it falls back to everything so the page is never empty.
+  const followScoped = !follow && tab === 'all' && following.length > 0 && counts.for_you > 0;
+  const fallback = !follow && tab === 'all' && following.length > 0 && !followScoped;
+  const scope = follow ? 'all' : followScoped ? 'watchlist' : tab;
   const stories = await getFeed({ workspaceId, scope, platform, q, followTargetId: follow?.id ?? '' });
 
   const filtered = Boolean(platform || q);
@@ -94,8 +86,8 @@ export default async function StoriesPage({ searchParams }) {
   const weak = stories.filter((s) => s.whyNotTop);
   const [main, more] = strong.length ? [strong, weak] : [weak, []];
   const firstName = (session.user.name ?? '').split(' ')[0];
-  const tabCount = { foryou: counts.for_you, all: counts.total, saved: counts.saved };
-  const title = follow ? follow.name : tab === 'foryou' ? 'Your stories' : tab === 'saved' ? 'Saved stories' : 'This week in AI & tech';
+  const tabCount = { all: followScoped ? counts.for_you : counts.total, saved: counts.saved };
+  const title = follow ? follow.name : tab === 'saved' ? 'Saved stories' : following.length ? 'Your stories' : 'This week in AI & tech';
 
   return (
     <div className="page reading">
@@ -105,11 +97,12 @@ export default async function StoriesPage({ searchParams }) {
           {firstName ? `, ${firstName}` : ''}
         </p>
         <h1>{title}</h1>
-        <p className="home-sub">
-          {follow
-            ? `Stories this week that involve ${follow.name}.`
-            : `${dayRange(totals.first_post_at, totals.last_post_at)} · ${fmtNum(totals.posts)} posts and ${fmtNum(totals.comments)} comments from six platforms, grouped into ${plural(counts.total, 'story', 'stories')}.`}
-        </p>
+        {follow ? <p className="home-sub">Stories this week that involve {follow.name}.</p> : null}
+        {fallback ? (
+          <p className="home-sub">
+            None of this week’s stories involve who you follow yet, so here’s everything. <Link href="/following">Follow more</Link>
+          </p>
+        ) : null}
       </header>
 
       {sp.welcome ? (
@@ -130,7 +123,7 @@ export default async function StoriesPage({ searchParams }) {
           <span>
             Showing stories involving <b>{follow.name}</b>
           </span>
-          <Link href="/stories?tab=foryou" aria-label="Show all your stories">
+          <Link href="/stories?tab=all" aria-label="Show all your stories">
             <Icon name="close" size={14} />
           </Link>
         </p>

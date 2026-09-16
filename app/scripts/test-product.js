@@ -168,7 +168,7 @@ try {
     assert.equal(await unfollowCreator(ws, created.id), false);
   });
 
-  await check('stories involving who you follow show under For you', async () => {
+  await check('stories involving who you follow show under All stories', async () => {
     const all = await getFeed({ workspaceId: ws });
     const mine = await getFeed({ workspaceId: ws, scope: 'watchlist' });
     assert.ok(mine.length > 0 && mine.length <= all.length);

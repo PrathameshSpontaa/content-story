@@ -18,7 +18,7 @@ export default async function FollowingPage() {
       <header className="pagehead">
         <h1>Following</h1>
         <p>
-          Stories that involve these creators, subreddits and brands appear in <Link href="/stories?tab=foryou">Your stories</Link>. Numbers are for {dayRange(data.week.start, data.week.end)}.
+          Stories that involve these creators, subreddits and brands appear in <Link href="/stories?tab=all">Your stories</Link>. Numbers are for {dayRange(data.week.start, data.week.end)}.
         </p>
       </header>
       <FollowingView sources={data.sources} keywords={data.keywords} totalStories={data.totalStories} plan={{ name: plan.name, maxSources: plan.maxSources, maxKeywords: plan.maxKeywords }} />
