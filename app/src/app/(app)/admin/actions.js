@@ -23,6 +23,8 @@ export async function grantCreditsAction(_previous, formData) {
   // The nonce is rendered with the form, so a double-submitted form grants once.
   const result = await addCredits(workspaceId, amount, { kind: 'grant', reference: `admin:${session.user.email}`, idempotencyKey: `admin-grant:${nonce}`, note });
   revalidatePath('/admin');
+  revalidatePath('/admin/users');
+  revalidatePath(`/admin/workspaces/${workspaceId}`);
   return { ok: true, message: result.applied ? `Added ${amount.toLocaleString('en-IN')}.` : 'Already added.' };
 }
 

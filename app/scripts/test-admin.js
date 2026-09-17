@@ -1,24 +1,30 @@
 // End-to-end check of the story review queue (approve, reject, merge, keep separate, the AI audit
-// filters), saving operator settings, report-story access and the operations helpers against the real
-// database. Settings rows are put back exactly as they were. Creates throwaway stories, posts,
-// a workspace and a reviewer, prints PASS/FAIL, then deletes everything it made.
+// filters, workspaces' following feeds), saving operator settings, report-story access, the users and
+// workspace pages, and the operations helpers (who started each run, the OpenAI credit estimate)
+// against the real database. Settings rows are put back exactly as they were. Creates throwaway
+// stories, posts, workspaces, runs and users, prints PASS/FAIL, then deletes everything it made.
 // Usage: node scripts/test-admin.js
 import assert from 'node:assert/strict';
 import {
   SETTINGS_SECTIONS,
+  adminOverview,
   costByDay,
   decidedBy,
   getStoryForReview,
+  getWorkspaceForAdmin,
   keepSeparate,
   listNotificationProblems,
   listReportRuns,
   listRuns,
   listStoriesForReview,
   listUnsureMergePairs,
+  listUsers,
   marginByAction,
   mergeStory,
   needsYouReason,
+  openAiCreditEstimate,
   rejectStory,
+  reportStoryChoices,
   reviewCounts,
   saveSettingsSection,
   setStoryPublished,
@@ -40,7 +46,7 @@ async function check(name, fn) {
 }
 
 const suffix = Date.now();
-const made = { stories: [], posts: [], runs: [], users: [], workspaces: [], feeds: [] };
+const made = { stories: [], posts: [], runs: [], users: [], workspaces: [], feeds: [], requests: [] };
 const q = async (sql, params = []) => (await pool.query(sql, params)).rows;
 
 // A version with the same JSON shape the pipeline writes, small enough to read.
@@ -302,6 +308,38 @@ try {
     assert.ok(pair(await listUnsureMergePairs({ minConfidence: 0.7, autoMerge: false }), held, personHeld), 'with AI merging off every pair is flagged');
   });
 
+  await check('following feeds: a failed story needs you, a passed one publishes itself, and merges stay inside one feed', async () => {
+    const name = `billing test admin following ${suffix}`;
+    const [ws] = await q(`insert into workspaces (name) values ($1) returning id`, [name]);
+    made.workspaces.push(ws.id);
+    const [feed] = await q(`insert into feeds (workspace_id, name, kind) values ($1, 'Following', 'following') returning id`, [ws.id]);
+    const failed = await story(feed.id, { headline: `Following failed ${suffix}` });
+    await q('update story_versions set passed = false where story_id = $1', [failed]);
+    const published = await story(feed.id, { status: 'active', published: true, headline: `Following published ${suffix}` });
+    const passedNotYetPublished = await story(feed.id);
+
+    const needsRows = await listStoriesForReview('needs');
+    const row = needsRows.find((s) => s.id === failed);
+    assert.ok(row, 'a following-feed story whose checks failed needs you');
+    assert.equal(row.feed_kind, 'following');
+    assert.equal(row.feed_workspace_id, ws.id);
+    assert.equal(row.workspace_name, name);
+    assert.equal(needsYouReason(row, { autoPublish: false }), 'Checks failed', 'AI publishing is a shared-feed setting');
+    assert.ok(!needsRows.some((s) => s.id === published));
+    assert.ok(!needsRows.some((s) => s.id === passedNotYetPublished), 'a story that passed is not waiting on a person');
+    assert.ok((await listStoriesForReview('ai_published')).some((s) => s.id === published), 'published by its checks counts as automatic');
+    assert.ok(!(await listStoriesForReview('human_published')).some((s) => s.id === published));
+    assert.deepEqual(new Set((await listStoriesForReview('all', { feedId: feed.id })).map((s) => s.id)), new Set([failed, published, passedNotYetPublished]));
+
+    assert.ok((await adminOverview()).totals.needs_you >= 1);
+
+    await assert.rejects(mergeStory(failed, a, by), /different feeds/);
+    await q(`insert into merge_candidates (story_a, story_b, reason) values ($1, $2, 'test')`, [failed, a]);
+    assert.ok(!(await listUnsureMergePairs({ minConfidence: 0.7, autoMerge: false })).some((p) => p.story_a === failed), 'pairs across feeds are left out');
+    await mergeStory(passedNotYetPublished, failed, by);
+    assert.equal((await q('select status from stories where id = $1', [passedNotYetPublished]))[0].status, 'merged', 'stories in one following feed still merge');
+  });
+
   await check('saving settings validates every value, stores good ones and saves nothing on a bad one', async () => {
     settingsBefore = await q('select key, value, updated_at::text as updated_at, updated_by from app_settings where key = any($1::text[])', [SETTING_KEYS]);
     try {
@@ -340,6 +378,17 @@ try {
       assert.equal(afterReview.merge_min_confidence, 0.85);
       assert.equal(afterReview.auto_publish, current.auto_publish);
       await assert.rejects(saveSettingsSection('review', { ...review, merge_min_confidence: '0.3' }), /at least 0.5/);
+
+      // The OpenAI credit counts down from when it was saved; empty clears it.
+      const afterOpenAi = await saveSettingsSection('openai', { openai_credit_usd: '25.5' }, { userId: reviewer.id });
+      assert.equal(afterOpenAi.openai_credit_usd, 25.5);
+      const estimate = await openAiCreditEstimate();
+      assert.equal(estimate.credit, 25.5);
+      assert.ok(estimate.savedAt && estimate.spent >= 0);
+      assert.equal(estimate.left, 25.5 - estimate.spent);
+      await assert.rejects(saveSettingsSection('openai', { openai_credit_usd: '-1' }), /at least 0/);
+      await saveSettingsSection('openai', { openai_credit_usd: '' });
+      assert.deepEqual(await openAiCreditEstimate(), { credit: 0, savedAt: null, spent: 0, left: null });
     } finally {
       await restoreSettings();
     }
@@ -354,7 +403,7 @@ try {
   await check('a finished report story opens for its own workspace only', async () => {
     const [ws] = await q(`insert into workspaces (name) values ($1) returning id`, [`billing test admin ${suffix}`]);
     made.workspaces.push(ws.id);
-    const [feed] = await q(`insert into feeds (workspace_id, name) values ($1, 'Reports') returning id`, [ws.id]);
+    const [feed] = await q(`insert into feeds (workspace_id, name, kind) values ($1, 'Reports', 'reports') returning id`, [ws.id]);
     made.feeds.push(feed.id);
     const reportStory = await story(feed.id, { status: 'active', published: true });
     assert.ok(await getStory(reportStory, ws.id), 'the owning workspace can open it');
@@ -373,6 +422,80 @@ try {
       [ws.id, reportStory],
     );
     assert.equal((await listReportRuns())[report.id]?.run_id, run.id);
+
+    // An open report can be linked by hand to its own workspace's stories.
+    const [open] = await q(
+      `insert into reports (workspace_id, query, platforms, date_from, date_to, quoted_credits, status)
+       values ($1, 'Admin test open', '{x}', current_date, current_date, 50, 'in_progress') returning id`,
+      [ws.id],
+    );
+    assert.ok((await reportStoryChoices())[open.id]?.some((s) => s.id === reportStory), 'its own workspace’s story is offered');
+  });
+
+  await check('runs show who started them: the person who refreshed, the schedule, or the admin who ran collection', async () => {
+    const [ws] = await q(`insert into workspaces (name) values ($1) returning id`, [`billing test admin runs ${suffix}`]);
+    made.workspaces.push(ws.id);
+    const [refreshRun] = await q(`insert into runs (kind, workspace_id, status, finished_at) values ('refresh', $1, 'done', now()) returning id`, [ws.id]);
+    const [scheduled] = await q(`insert into runs (kind, status, finished_at) values ('daily', 'done', now()) returning id`);
+    const [manual] = await q(`insert into runs (kind, status, finished_at) values ('daily', 'done', now()) returning id`);
+    made.runs.push(refreshRun.id, scheduled.id, manual.id);
+    await q(`insert into refresh_requests (workspace_id, requested_by, reason, status, run_id) values ($1, $2, 'button', 'done', $3)`, [ws.id, reviewer.id, refreshRun.id]);
+    const [adminRequest] = await q(`insert into refresh_requests (workspace_id, requested_by, reason, status, run_id) values (null, $1, 'admin', 'done', $2) returning id`, [reviewer.id, manual.id]);
+    made.requests.push(adminRequest.id);
+
+    const runs = await listRuns(50);
+    const find = (id) => runs.find((r) => r.id === id);
+    assert.deepEqual(find(refreshRun.id).started_by, { who: `admin-test-${suffix}@content-story.dev`, how: 'Refresh button' });
+    assert.equal(find(refreshRun.id).workspace_id, ws.id);
+    assert.deepEqual(find(scheduled.id).started_by, { who: 'Scheduled', how: null });
+    assert.deepEqual(find(manual.id).started_by, { who: `admin-test-${suffix}@content-story.dev`, how: 'Run collection now' });
+  });
+
+  await check('the users list and a workspace page show what an operator needs', async () => {
+    const email = `admin-test-${suffix}@content-story.dev`;
+    const [ws] = await q(`insert into workspaces (name) values ($1) returning id`, [`billing test admin page ${suffix}`]);
+    made.workspaces.push(ws.id);
+    await q(`insert into memberships (workspace_id, user_id, role) values ($1, $2, 'owner')`, [ws.id, reviewer.id]);
+    await q(`insert into credit_entries (workspace_id, kind, amount, idempotency_key, note) values ($1, 'grant', 250, $2, 'test grant')`, [ws.id, `admin-test-grant-${suffix}`]);
+    await q(`insert into tracking_targets (workspace_id, kind, query, platforms, active, paused_reason) values ($1, 'keyword', 'Admin test topic', '{x}', false, 'out_of_credits')`, [ws.id]);
+    const [feed] = await q(`insert into feeds (workspace_id, name, kind) values ($1, 'Following', 'following') returning id`, [ws.id]);
+    const own = await story(feed.id, { status: 'active', published: true });
+    await q(`insert into saved_stories (workspace_id, story_id, saved_by) values ($1, $2, $3)`, [ws.id, own, reviewer.id]);
+    const [run] = await q(`insert into runs (kind, workspace_id, status, finished_at) values ('refresh', $1, 'done', now()) returning id`, [ws.id]);
+    made.runs.push(run.id);
+    await q(
+      `insert into refresh_requests (workspace_id, requested_by, reason, status, run_id, started_at, finished_at)
+       values ($1, $2, 'button', 'done', $3, now() - interval '2 minutes', now())`,
+      [ws.id, reviewer.id, run.id],
+    );
+    await q(`insert into cost_events (provider, detail, run_id, usd) values ('apify', 'admin-test', $1, 0.5), ('openai', 'admin-test', $1, 0.1)`, [run.id]);
+
+    const page = await getWorkspaceForAdmin(ws.id);
+    assert.equal(page.available, 250);
+    assert.equal(page.members[0].email, email);
+    assert.equal(page.members[0].role, 'owner');
+    assert.equal(page.ledger[0].note, 'test grant');
+    assert.equal(page.follows[0].paused_reason, 'out_of_credits');
+    assert.equal(page.storyCount, 1);
+    assert.equal(page.stories[0].id, own);
+    assert.equal(page.saved[0].saved_by_email, email);
+    assert.equal(page.refreshes[0].requested_by_email, email);
+    assert.equal(Math.round(page.refreshes[0].usd * 10), 6);
+    assert.ok(page.refreshes[0].seconds >= 100);
+    assert.ok(page.spend.apify >= 0.5 && page.spend.ai >= 0.1);
+    assert.equal(await getWorkspaceForAdmin('00000000-0000-0000-0000-000000000000'), null);
+    assert.equal(await getWorkspaceForAdmin('not-a-uuid'), null);
+
+    // Test workspaces stay off the users list, and so does a user who only belongs to one; a user with
+    // no workspace at all is listed.
+    const [loner] = await q(`insert into users (email) values ($1) returning id`, [`admin-test-loner-${suffix}@content-story.dev`]);
+    made.users.push(loner.id);
+    const users = await listUsers(500);
+    assert.ok(!users.some((u) => u.id === reviewer.id));
+    const listed = users.find((u) => u.id === loner.id);
+    assert.ok(listed, 'a user with no workspace is listed');
+    assert.deepEqual(listed.workspaces, []);
+    assert.equal(listed.refreshes, 0);
   });
 
   await check('runs, spend, margin and notification helpers return rows', async () => {
@@ -406,6 +529,7 @@ try {
   await restoreSettings();
   // Merged stories point at their target; clear that before deleting.
   if (made.runs.length) await q('delete from cost_events where run_id = any($1::uuid[])', [made.runs]);
+  if (made.requests.length) await q('delete from refresh_requests where id = any($1::uuid[])', [made.requests]);
   if (made.stories.length) {
     await q('update stories set merged_into = null where id = any($1::uuid[])', [made.stories]);
     await q('delete from stories where id = any($1::uuid[])', [made.stories]);
