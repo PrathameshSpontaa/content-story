@@ -20,7 +20,7 @@ export default async function SignUpPage() {
         <h1>Your first stories in about a minute.</h1>
         <ul className="ticks">
           <li>Pick creators, subreddits and brands to follow</li>
-          <li>Every story in this week’s AI and tech feed</li>
+          <li>Your own stories, made only from who you follow</li>
           <li>
             {fmtNum(credits)} free credits{referrer ? ` (${fmtNum(TRIAL.credits)} trial + ${fmtNum(REFERRAL.friendCredits)} from your invite)` : ', enough for a story report'}
           </li>

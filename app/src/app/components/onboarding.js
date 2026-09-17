@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import Avatar from './avatar.js';
 import CreatorFinder from './creator-finder.js';
 import Icon from './icons.js';
@@ -10,9 +10,9 @@ const STEPS = ['About you', 'Creators', 'Brands and topics'];
 const count = (n, one, many = `${one}s`) => `${n.toLocaleString('en-IN')} ${n === 1 ? one : many}`;
 const cleanWord = (value) => value.trim().replace(/\s+/g, ' ');
 
-// First run: who you are, who to follow, which brands to watch. Nothing is saved until the end,
-// and the footer shows how many of this week's stories the picks bring in.
-export default function Onboarding({ firstName, useCases, creators, communities, topics, totalStories, limits, initialUseCase, finish }) {
+// First run: who you are, who to follow, which brands to watch. Nothing is saved until the end.
+// Stories are made only from the picks, so the footer says how many there are.
+export default function Onboarding({ firstName, useCases, creators, communities, topics, limits, initialUseCase, finish }) {
   const [step, setStep] = useState(0);
   const [creatorList, setCreatorList] = useState(creators);
   const [useCase, setUseCase] = useState(initialUseCase ?? null);
@@ -30,14 +30,6 @@ export default function Onboarding({ firstName, useCases, creators, communities,
 
   const sourcesUsed = picked.size + subs.size;
   const hasWord = (name) => words.some((w) => w.toLowerCase() === name.toLowerCase());
-
-  const covered = useMemo(() => {
-    const ids = new Set();
-    for (const c of creatorList) if (picked.has(c.id)) c.story_ids.forEach((id) => ids.add(id));
-    for (const c of communities) if (subs.has(c.name)) c.story_ids.forEach((id) => ids.add(id));
-    for (const t of topics) if (words.some((w) => w.toLowerCase() === t.name.toLowerCase())) t.story_ids.forEach((id) => ids.add(id));
-    return ids.size;
-  }, [picked, subs, words, creatorList, communities, topics]);
 
   const sourceLimitMessage = `${limits.planName} includes ${count(limits.maxSources, 'creator or subreddit', 'creators and subreddits')}. Unpick one to add another.`;
 
@@ -254,10 +246,10 @@ export default function Onboarding({ firstName, useCases, creators, communities,
         <div className="ob-foot-in">
           <p className="ob-covered" aria-live="polite">
             {step === 0 ? (
-              <>This week: {count(totalStories, 'story', 'stories')} from six platforms.</>
+              <>Your stories are made only from who you follow, across six platforms.</>
             ) : (
               <>
-                Your picks bring in <b>{covered}</b> of this week’s {count(totalStories, 'story', 'stories')}.
+                You picked <b>{sourcesUsed + words.length}</b>. Your stories are made from their posts.
               </>
             )}
           </p>

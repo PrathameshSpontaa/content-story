@@ -1,15 +1,17 @@
-// The Stories page: a greeting, when stories last updated with a Refresh button, the For you / All /
-// Saved tabs with search, and the story cards.
+// The Stories page: a greeting, when stories last updated with a Refresh button, the For you and Saved
+// tabs with search, the workspace's own story cards, and recent posts from the creators it follows that
+// aren't in a story. Nobody sees another workspace's stories; following nobody means no stories.
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { PLATFORM_NAMES, plural } from '../../../../lib/format.js';
 import { PLATFORMS } from '../../../../lib/pricing.js';
 import { getRefreshStatus } from '../../../../lib/refresh.js';
 import { requireSession } from '../../../../lib/session.js';
-import { getFeed, getFeedCounts } from '../../../../lib/stories.js';
+import { getFeed, getFeedCounts, getFollowedPosts } from '../../../../lib/stories.js';
 import { listFollowing } from '../../../../lib/watchlist.js';
 import FilterBar from '../../components/filter-bar.js';
 import Icon from '../../components/icons.js';
+import PostCard from '../../components/post-card.js';
 import RefreshControl from '../../components/refresh-control.js';
 import StoryCard from '../../components/story-card.js';
 import { toggleSaveAction } from '../actions.js';
@@ -19,7 +21,6 @@ export const metadata = { title: 'Stories' };
 
 const TABS = [
   { id: 'foryou', label: 'For you' },
-  { id: 'all', label: 'All stories' },
   { id: 'saved', label: 'Saved' },
 ];
 
@@ -35,32 +36,24 @@ function tabHref(tab, { q, platform }) {
   return `/stories?${params}`;
 }
 
-function Empty({ tab, filtered, followingCount, total }) {
+function Empty({ tab, filtered, followingCount }) {
   let content;
   if (filtered) {
-    content = { title: 'No stories match', text: 'Try a different search or platform.', actions: [{ href: `/stories?tab=${tab}`, label: 'Clear search', primary: true }] };
+    content = { title: 'Nothing matches', text: 'Try a different search or platform.', actions: [{ href: `/stories?tab=${tab}`, label: 'Clear search', primary: true }] };
   } else if (tab === 'saved') {
-    content = { title: 'Nothing saved yet', text: 'Use the bookmark on any story to keep it here.', actions: [{ href: '/stories?tab=all', label: 'Browse all stories', primary: true }] };
-  } else if (tab === 'foryou' && !followingCount) {
+    content = { title: 'Nothing saved yet', text: 'Use the bookmark on any story to keep it here.', actions: [{ href: '/stories', label: 'Back to your stories', primary: true }] };
+  } else if (!followingCount) {
     content = {
       title: 'Choose who to follow',
-      text: 'Your stories come from the creators, subreddits and brands you follow. It takes a minute.',
-      actions: [
-        { href: '/following', label: 'Choose who to follow', primary: true },
-        { href: '/stories?tab=all', label: 'Browse all stories' },
-      ],
-    };
-  } else if (tab === 'foryou') {
-    content = {
-      title: 'Nothing from who you follow yet',
-      text: `None of the latest ${plural(total, 'story', 'stories')} involve them yet. Follow a few more, or browse everything.`,
-      actions: [
-        { href: '/stories?tab=all', label: 'Browse all stories', primary: true },
-        { href: '/following', label: 'Follow more' },
-      ],
+      text: 'Your stories are made only from the creators, subreddits and brands you follow. Follow a few to get your first stories.',
+      actions: [{ href: '/following', label: 'Choose who to follow', primary: true }],
     };
   } else {
-    content = { title: 'No stories yet', text: 'Stories appear here once new posts are collected and checked.', actions: [] };
+    content = {
+      title: 'No stories yet',
+      text: 'Stories appear once the latest posts from who you follow are collected and read. Use Refresh to collect now, or follow more.',
+      actions: [{ href: '/following', label: 'Follow more', primary: true }],
+    };
   }
   return (
     <div className="empty">
@@ -95,19 +88,23 @@ export default async function StoriesPage({ searchParams }) {
   ]);
 
   const follow = following.find((t) => t.id === sp.follow) ?? null;
-  const tab = TABS.some((t) => t.id === sp.tab) ? sp.tab : following.length ? 'foryou' : 'all';
+  const tab = !follow && sp.tab === 'saved' ? 'saved' : 'foryou';
   const platform = PLATFORMS.includes(sp.platform) ? sp.platform : '';
   const q = typeof sp.q === 'string' ? sp.q.trim().slice(0, 80) : '';
-  const scope = follow ? 'all' : tab === 'foryou' ? 'watchlist' : tab;
-  const stories = await getFeed({ workspaceId, scope, platform, q, followTargetId: follow?.id ?? '' });
+  // Posts only come from followed creators: none for the Saved tab or a subreddit or brand filter.
+  const wantPosts = tab === 'foryou' && following.length > 0 && (!follow || follow.kind === 'creator');
+  const [stories, posts] = await Promise.all([
+    getFeed({ workspaceId, scope: tab === 'saved' ? 'saved' : 'following', platform, q, followTargetId: follow?.id ?? '' }),
+    wantPosts ? getFollowedPosts(workspaceId, { platform, q, creatorId: follow?.creator_id ?? '' }) : [],
+  ]);
 
   const filtered = Boolean(platform || q);
   const strong = stories.filter((s) => !s.whyNotTop);
   const weak = stories.filter((s) => s.whyNotTop);
   const [main, more] = strong.length ? [strong, weak] : [weak, []];
   const firstName = (session.user.name ?? '').split(' ')[0];
-  const tabCount = { foryou: counts.for_you, all: counts.total, saved: counts.saved };
-  const title = follow ? follow.name : tab === 'foryou' ? 'Your stories' : tab === 'saved' ? 'Saved stories' : 'Latest in AI & tech';
+  const tabCount = { foryou: counts.for_you, saved: counts.saved };
+  const title = follow ? follow.name : tab === 'saved' ? 'Saved stories' : 'Your stories';
 
   return (
     <div className="page reading">
@@ -118,7 +115,7 @@ export default async function StoriesPage({ searchParams }) {
         </p>
         <h1>{title}</h1>
         <RefreshControl initialStatus={refreshStatus} />
-        {follow ? <p className="home-sub">Stories that involve {follow.name}.</p> : null}
+        {follow ? <p className="home-sub">Stories and posts that involve {follow.name}.</p> : null}
       </header>
 
       {sp.welcome ? (
@@ -127,8 +124,8 @@ export default async function StoriesPage({ searchParams }) {
           <p>
             <b>You’re set up.</b>{' '}
             {counts.for_you
-              ? `${plural(counts.for_you, 'story', 'stories')} ${counts.for_you === 1 ? 'involves' : 'involve'} who you follow.`
-              : 'None of the latest stories involve your picks yet, so here’s everything.'}
+              ? `${plural(counts.for_you, 'story', 'stories')} from who you follow.`
+              : 'Your first stories are made from who you follow once their latest posts are collected. That can take a few minutes.'}
           </p>
           <Link href="/following">Edit who you follow</Link>
         </div>
@@ -137,9 +134,9 @@ export default async function StoriesPage({ searchParams }) {
       {follow ? (
         <p className="filterchip">
           <span>
-            Showing stories involving <b>{follow.name}</b>
+            Showing <b>{follow.name}</b>
           </span>
-          <Link href="/stories?tab=foryou" aria-label="Show all your stories">
+          <Link href="/stories" aria-label="Show all your stories">
             <Icon name="close" size={14} />
           </Link>
         </p>
@@ -178,9 +175,23 @@ export default async function StoriesPage({ searchParams }) {
             </section>
           ) : null}
         </>
-      ) : (
-        <Empty tab={follow ? 'all' : tab} filtered={filtered} followingCount={following.length} total={counts.total} />
-      )}
+      ) : !posts.length ? (
+        <Empty tab={tab} filtered={filtered} followingCount={following.length} />
+      ) : null}
+
+      {posts.length ? (
+        <section className="more-stories" aria-labelledby="posts-h">
+          <div className="listhead">
+            <h2 id="posts-h">{follow ? `Posts from ${follow.name}` : 'Posts from creators you follow'}</h2>
+            <p>{stories.length ? 'The last 7 days, not part of a story.' : 'No stories from these yet. Here’s what they posted in the last 7 days.'}</p>
+          </div>
+          <div className="storylist">
+            {posts.map((p) => (
+              <PostCard key={p.id} post={p} />
+            ))}
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }

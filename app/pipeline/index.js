@@ -1,5 +1,6 @@
 // The production pipeline's entry points, called by the job layer (pipeline/jobs.js): the scheduled
-// run for the shared feed, one workspace's on-demand refresh into the shared feed, and one report.
+// run, one workspace's on-demand refresh, and one report. Posts are collected and understood once for
+// everyone; stories are private, built per workspace from only what it follows.
 import { pool } from '../lib/db.js';
 import { aiProvider } from '../lib/env.js';
 import { collectMinHours, getSettings } from '../lib/settings.js';
@@ -22,12 +23,26 @@ export async function sharedFeedId() {
   return (await pool.query('select id from feeds where workspace_id is null limit 1')).rows[0].id;
 }
 
-export async function workspaceFeedId(workspaceId) {
-  const { rows } = await pool.query('select id from feeds where workspace_id = $1 order by id limit 1', [workspaceId]);
+// A workspace's feed of one kind: 'reports' (stories from reports it ordered) or 'following' (its
+// stories from what it follows). Made on first use; the unique index makes a racing insert a no-op.
+export async function workspaceFeedId(workspaceId, kind = 'reports') {
+  const find = () => pool.query('select id from feeds where workspace_id = $1 and kind = $2', [workspaceId, kind]);
+  const { rows } = await find();
   if (rows[0]) return rows[0].id;
   const { rows: ws } = await pool.query('select name from workspaces where id = $1', [workspaceId]);
-  const { rows: created } = await pool.query('insert into feeds (workspace_id, name) values ($1, $2) returning id', [workspaceId, `${ws[0]?.name ?? 'Workspace'} reports`]);
-  return created[0].id;
+  await pool.query(
+    `insert into feeds (workspace_id, kind, name) values ($1, $2, $3) on conflict (workspace_id, kind) where workspace_id is not null do nothing`,
+    [workspaceId, kind, `${ws[0]?.name ?? 'Workspace'} ${kind === 'following' ? 'stories' : 'reports'}`],
+  );
+  return (await find()).rows[0].id;
+}
+
+export const followingFeedId = (workspaceId) => workspaceFeedId(workspaceId, 'following');
+
+// Builds one workspace's stories from the posts of what it follows. A workspace that follows nothing
+// has no stories to build.
+async function buildWorkspaceStories({ runId, workspaceId, feedId = null, log }) {
+  return buildStories({ runId, feedId: feedId ?? (await followingFeedId(workspaceId)), log });
 }
 
 // How recently a source may have been collected and still be skipped by the scheduled run: most of
@@ -38,7 +53,9 @@ export async function scheduledMinHours(settings = null) {
   return collectMinHours(settings ?? (await getSettings()));
 }
 
-// Collect everything tracked, understand the new posts, then group and write the shared feed's stories.
+// Collect everything tracked, understand the new posts, then build each following workspace's stories.
+// One workspace failing doesn't stop the others; the run fails only when every one failed, or at once
+// when a spend cap or used-up AI quota means the rest would fail too.
 export async function runDaily({ runId, log = console.log }) {
   let collected = { skipped: true };
   let understood = { skipped: true };
@@ -48,14 +65,28 @@ export async function runDaily({ runId, log = console.log }) {
     const { understandNewPosts } = await load('understand');
     understood = await understandNewPosts({ runId, log });
   } else log('[daily] PIPELINE_SKIP_COLLECT=1: collection and understanding skipped');
-  const stories = await buildStories({ runId, feedId: await sharedFeedId(), log });
-  return { collected, understood, stories };
+  const { rows: workspaces } = await pool.query(
+    `select w.id, w.name from workspaces w where exists (select 1 from tracking_targets t where t.workspace_id = w.id and t.active) order by w.created_at`,
+  );
+  const stories = [];
+  const failed = [];
+  for (const w of workspaces) {
+    try {
+      stories.push(...(await buildWorkspaceStories({ runId, workspaceId: w.id, log })));
+    } catch (err) {
+      if (err?.name === 'SpendCapReached' || err?.dailyQuota) throw err;
+      log(`[daily] stories for workspace ${w.id} (${w.name}) failed: ${String(err.message).slice(0, 300)}`);
+      failed.push({ workspaceId: w.id, error: String(err.message).slice(0, 300) });
+    }
+  }
+  if (failed.length && failed.length === workspaces.length) throw new Error(`Stories failed for every workspace: ${failed[0].error}`);
+  return { collected, understood, stories, workspaces: workspaces.length, failed };
 }
 
 // One workspace's refresh: collect only what it tracks (a source anyone collected within the
-// on-demand cooldown is not scraped again), understand the new posts, and attach the new and
-// updated posts to shared-feed stories or start new ones. `feedId` is for tests. Throws the
-// spend-cap error when the cap stopped collection before anything came in.
+// on-demand cooldown is not scraped again), understand the new posts, and build the workspace's
+// stories from its posts of the last week, including any a failed run left without a story.
+// `feedId` is for tests. Throws the spend-cap error when the cap stopped collection before anything came in.
 export async function runRefresh({ runId, workspaceId, log = console.log, feedId = null }) {
   if (!workspaceId) throw new Error('runRefresh needs a workspaceId');
   const settings = await getSettings();
@@ -72,10 +103,7 @@ export async function runRefresh({ runId, workspaceId, log = console.log, feedId
     const { understandNewPosts } = await load('understand');
     understood = await understandNewPosts({ runId, postIds: collected.newPostIds, log });
   }
-  const postIds = [...new Set([...collected.newPostIds, ...collected.postIds])];
-  let stories = [];
-  if (postIds.length) stories = await buildStories({ runId, feedId: feedId ?? (await sharedFeedId()), postIds, log });
-  else log('[refresh] nothing new to build');
+  const stories = await buildWorkspaceStories({ runId, workspaceId, feedId, log });
   return { collected, understood, stories };
 }
 

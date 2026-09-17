@@ -299,6 +299,11 @@ li::marker { font-variant-numeric: normal; }
 .faces .avatar { box-shadow: 0 0 0 2px var(--surface); }
 .faces .avatar + .avatar { margin-left: -3px; }
 .youfollow { color: var(--link); font-weight: 600; }
+.pcard { display: grid; gap: 10px; padding: 16px 20px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); }
+.pcard-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.pcard-about { margin: 0; font-size: 15.5px; line-height: 1.45; }
+.pcard-reactions { display: grid; gap: 6px; margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--bg); list-style: none; font-size: 14px; line-height: 1.4; }
+.pcard-open { margin-left: auto; font-weight: 600; }
 .scard-foot .heat { position: relative; z-index: 1; margin-left: auto; }
 
 /* ── Story page ───────────────────────────────────────── */
@@ -1025,6 +1030,8 @@ details.more .narrative, details.more .ev { margin-top: 10px; }
   .searchbox { flex: 1; }
   .searchbox input { width: 100%; }
   .scard { padding: 16px; }
+  .pcard { padding: 14px 16px; }
+  .pcard-open { margin-left: 0; }
   .scard.lead .scard-title { font-size: 22px; }
   .scard-foot .heat { margin-left: 0; }
   .hero, .doc-main, .doc-aside, .band { padding-right: 18px; padding-left: 18px; }

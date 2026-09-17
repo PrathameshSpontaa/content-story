@@ -106,7 +106,7 @@ export default function RateCard({ plans, trial, prices, startHref, planHref }) 
             {row('Creators or subreddits', (c) => fmtNum(c.creators))}
             {row('Brands or topics', (c) => fmtNum(c.brands))}
             {row('Seats', (c) => fmtNum(c.seats))}
-            {row('Weekly AI & tech feed', () => 'Included', 'y')}
+            {row('Private stories from who you follow', () => 'Included', 'y')}
             {row('Story reports', () => 'Quoted per report', 'n')}
             {row('Payment', (c) => c.pay)}
             <tr>

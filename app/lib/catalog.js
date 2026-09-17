@@ -1,5 +1,5 @@
 // What we already cover: creators, subreddits and brands in collected data. Onboarding and the
-// Following page offer these as one-tap follows, each with the stories it would bring in.
+// Following page offer these as one-tap follows, each with the workspace's own stories it is in.
 import { pool } from './db.js';
 import { PLATFORM_NAMES } from './format.js';
 import { STORY_TEXT, matchesWord } from './watchlist.js';
@@ -12,7 +12,9 @@ export const USE_CASES = [
 ];
 
 const PLATFORM_ORDER = `array['x', 'youtube', 'linkedin', 'instagram', 'tiktok', 'reddit']::platform[]`;
-const PUBLISHED_STORY = `join stories s on s.id = sp.story_id and s.published_at is not null and s.status not in ('merged', 'rejected')`;
+// A published story in the workspace's own feed ($1); stories are never counted across workspaces.
+const PUBLISHED_STORY = `join stories s on s.id = sp.story_id and s.published_at is not null and s.status not in ('merged', 'rejected')
+  join feeds sf on sf.id = s.feed_id and sf.workspace_id = $1 and sf.kind = 'following'`;
 
 // Creators we collect (verified handles), plus anyone this workspace added itself.
 export async function listCatalogCreators(workspaceId) {
@@ -56,7 +58,7 @@ export async function listCatalogCommunities(workspaceId) {
   return rows;
 }
 
-// Brands and products the week's stories are about, plus the workspace's own keywords.
+// Brands and products the workspace's stories are about, plus its own keywords.
 export async function listCatalogTopics(workspaceId, limit = 12) {
   const platformNames = Object.values(PLATFORM_NAMES).map((n) => n.toLowerCase());
   const { rows } = await pool.query(
@@ -77,6 +79,7 @@ export async function listCatalogTopics(workspaceId, limit = 12) {
      )
      select tp.name,
             array(select s.id from stories s
+                    join feeds sf on sf.id = s.feed_id and sf.workspace_id = $1 and sf.kind = 'following'
                     join lateral (select * from story_versions v where v.story_id = s.id and v.passed order by v.version desc limit 1) v on true
                    where s.published_at is not null and s.status not in ('merged', 'rejected')
                      and ${matchesWord(STORY_TEXT, 'tp.name')}) as story_ids,

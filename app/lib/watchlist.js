@@ -47,6 +47,8 @@ export const creatorPhoto = (creatorIdSql) => `(
    order by array_position(array['x', 'youtube', 'linkedin', 'tiktok', 'instagram']::platform[], ph.platform)
    limit 1)`;
 
+// The workspace's own stories ($1): a follow's story count never includes another workspace's.
+const OWN_FEED = `join feeds sf on sf.id = s.feed_id and sf.workspace_id = $1 and sf.kind = 'following'`;
 const LATEST_PASSED = `join lateral (select * from story_versions v where v.story_id = s.id and v.passed order by v.version desc limit 1) v on true`;
 const PLATFORM_ORDER = `array['x', 'youtube', 'linkedin', 'instagram', 'tiktok', 'reddit']::platform[]`;
 const UUID = /^[0-9a-f-]{36}$/i;
@@ -64,12 +66,14 @@ export async function listTargets(workspaceId) {
               else 0
             end::int as posts_collected,
             case t.kind
-              when 'keyword' then (select count(*) from stories s ${LATEST_PASSED}
+              when 'keyword' then (select count(*) from stories s ${OWN_FEED}
+                                    ${LATEST_PASSED}
                                     where s.published_at is not null
                                       and ${matchesWord(STORY_TEXT, 't.query')})
               else (select count(distinct sp.story_id)
                       from story_posts sp
                       join stories s on s.id = sp.story_id and s.published_at is not null
+                      ${OWN_FEED}
                       join posts p on p.id = sp.post_id
                       left join creator_handles h on h.id = p.handle_id
                      where (t.kind = 'creator' and h.creator_id = t.creator_id)
@@ -169,6 +173,7 @@ const creatorSummary = (where) => `
            array(select distinct sp.story_id
                    from story_posts sp
                    join stories s on s.id = sp.story_id and s.published_at is not null and s.status not in ('merged', 'rejected')
+                   join feeds sf on sf.id = s.feed_id and sf.workspace_id = $1 and sf.kind = 'following'
                    join posts p on p.id = sp.post_id
                    join creator_handles sh on sh.id = p.handle_id
                   where sh.creator_id = c.id) as story_ids,
@@ -337,7 +342,7 @@ export async function completeOnboarding(workspaceId, { useCase, creatorIds, com
 // The short list for the sidebar and the stories filter.
 export async function listFollowing(workspaceId) {
   const { rows } = await pool.query(
-    `select t.id, t.kind, coalesce(c.name, t.query) as name, ${creatorPhoto('t.creator_id')} as photo
+    `select t.id, t.kind, t.creator_id, coalesce(c.name, t.query) as name, ${creatorPhoto('t.creator_id')} as photo
        from tracking_targets t left join creators c on c.id = t.creator_id
       where t.workspace_id = $1 and t.active
       order by case t.kind when 'creator' then 0 when 'community' then 1 else 2 end, lower(coalesce(c.name, t.query))`,

@@ -16,7 +16,8 @@ const LATEST_METRICS = `latest as (
     from post_metrics m
    order by m.post_id, m.captured_at desc)`;
 const LIVE_STORY = `s.published_at is not null and s.status not in ('merged', 'rejected')`;
-const SHARED_FEED = `join feeds f on f.id = s.feed_id and f.workspace_id is null`;
+// Stories are private: a workspace's numbers only count its own stories (none without a workspace).
+const OWN_FEED = (workspaceSql) => `join feeds f on f.id = s.feed_id and f.workspace_id = ${workspaceSql} and f.kind = 'following'`;
 const LATEST_PASSED = `join lateral (select * from story_versions v where v.story_id = s.id and v.passed order by v.version desc limit 1) v on true`;
 const HEADLINE = `coalesce(v.feed_edit ->> 'headline', v.written ->> 'headline')`;
 const DAYS_AGO = `floor(extract(epoch from b.week_end - p.published_at) / 86400)::int`;
@@ -30,13 +31,13 @@ const lower = (names) => names.map((n) => String(n).toLowerCase());
 export const EMPTY_STATS = Object.freeze({ posts: 0, interactions: 0, views: null, change: null, daily: [0, 0, 0, 0, 0, 0, 0], channels: [], storyCount: 0, stories: [] });
 const EMPTY_KEYWORD = Object.freeze({ mentions: 0, change: null, daily: [0, 0, 0, 0, 0, 0, 0], channels: [], storyCount: 0, stories: [] });
 
-async function storyTotal() {
-  const { rows } = await pool.query(`select count(*)::int as n from stories s ${SHARED_FEED} ${LATEST_PASSED} where ${LIVE_STORY}`);
+async function storyTotal(workspaceId) {
+  const { rows } = await pool.query(`select count(*)::int as n from stories s ${OWN_FEED('$1::uuid')} ${LATEST_PASSED} where ${LIVE_STORY}`, [workspaceId]);
   return rows[0].n;
 }
 
 // Numbers for creators (by id) and subreddits (by name), keyed by creator id or lower-case subreddit.
-export async function getSourceStats({ creatorIds = [], communities = [] }) {
+export async function getSourceStats({ creatorIds = [], communities = [], workspaceId = null }) {
   if (!creatorIds.length && !communities.length) return new Map();
   const params = [creatorIds, lower(communities)];
   const [activity, stories] = await Promise.all([
@@ -67,10 +68,10 @@ export async function getSourceStats({ creatorIds = [], communities = [] }) {
                 where lower(p.community) = any($2::text[])
                 group by 1, 2) x
          join stories s on s.id = x.story_id and ${LIVE_STORY}
-         ${SHARED_FEED}
+         ${OWN_FEED('$3::uuid')}
          ${LATEST_PASSED}
         order by s.last_post_at desc nulls last, s.heat desc nulls last`,
-      params,
+      [...params, workspaceId],
     ),
   ]);
 
@@ -131,7 +132,7 @@ function withChannels(stats, platforms) {
 }
 
 // Stories and posts in the latest week that mention each brand or topic as a whole word.
-export async function getKeywordStats(names) {
+export async function getKeywordStats(names, workspaceId = null) {
   const words = [...new Map(names.map((n) => String(n).trim()).filter(Boolean).map((n) => [n.toLowerCase(), n])).values()];
   if (!words.length) return new Map();
   const POST_TEXT = `(p.text || ' ' || p.transcript)`;
@@ -143,11 +144,11 @@ export async function getKeywordStats(names) {
                      where sp.story_id = s.id and ${matchesWord(POST_TEXT, 'w.name')}) as platforms
          from unnest($1::text[]) as w(name)
          join stories s on ${LIVE_STORY}
-         ${SHARED_FEED}
+         ${OWN_FEED('$2::uuid')}
          ${LATEST_PASSED}
         where ${matchesWord(STORY_TEXT, 'w.name')}
         order by s.last_post_at desc nulls last, s.heat desc nulls last`,
-      [words],
+      [words, workspaceId],
     ),
     pool.query(
       `with ${BOUNDS}
@@ -250,7 +251,7 @@ async function listCommunities(workspaceId) {
   return rows;
 }
 
-// Brands and products this week's stories are about, plus the workspace's own (paused ones too).
+// Brands and products the workspace's stories are about, plus its own brands and topics (paused ones too).
 async function listTopics(workspaceId, limit = 12) {
   const platformNames = Object.values(PLATFORM_NAMES).map((n) => n.toLowerCase());
   const { rows } = await pool.query(
@@ -260,6 +261,7 @@ async function listTopics(workspaceId, limit = 12) {
          join entities e on e.id = pe.entity_id and e.type in ('org', 'product')
          join story_posts sp on sp.post_id = pe.post_id
          join stories s on s.id = sp.story_id and ${LIVE_STORY}
+         ${OWN_FEED('$1')}
         where lower(e.name) <> all($2::text[])
         group by e.name
         order by count(distinct s.id) desc, count(*) desc
@@ -279,10 +281,10 @@ async function listTopics(workspaceId, limit = 12) {
 }
 
 export async function getFollowing(workspaceId) {
-  const [creators, communities, topics, totalStories] = await Promise.all([listCreators(workspaceId), listCommunities(workspaceId), listTopics(workspaceId), storyTotal()]);
+  const [creators, communities, topics, totalStories] = await Promise.all([listCreators(workspaceId), listCommunities(workspaceId), listTopics(workspaceId), storyTotal(workspaceId)]);
   const [sourceStats, keywordStats] = await Promise.all([
-    getSourceStats({ creatorIds: creators.map((c) => c.id), communities: communities.map((c) => c.name) }),
-    getKeywordStats(topics.map((t) => t.name)),
+    getSourceStats({ creatorIds: creators.map((c) => c.id), communities: communities.map((c) => c.name), workspaceId }),
+    getKeywordStats(topics.map((t) => t.name), workspaceId),
   ]);
   const sources = [
     ...creators.map((c) => ({
@@ -322,9 +324,9 @@ export async function getFollowing(workspaceId) {
 
 // ─── Search ────────────────────────────────────────────────────────────────
 
-export async function withCreatorStats(creators) {
+export async function withCreatorStats(creators, workspaceId = null) {
   if (!creators.length) return creators;
-  const stats = await getSourceStats({ creatorIds: creators.map((c) => c.id) });
+  const stats = await getSourceStats({ creatorIds: creators.map((c) => c.id), workspaceId });
   return creators.map((c) => ({ ...c, stats: withChannels(stats.get(c.id), c.handles.map((h) => h.platform)) }));
 }
 
@@ -347,7 +349,7 @@ export async function searchCommunities(workspaceId, query, limit = 4) {
       limit $3`,
     [workspaceId, q, limit],
   );
-  const stats = await getSourceStats({ communities: rows.map((r) => r.name) });
+  const stats = await getSourceStats({ communities: rows.map((r) => r.name), workspaceId });
   return rows.map((r) => ({ kind: 'community', name: r.name, target_id: r.target_id, stats: withChannels(stats.get(r.name.toLowerCase()), ['reddit']) }));
 }
 
@@ -356,9 +358,9 @@ export async function previewKeyword(workspaceId, query) {
   const name = String(query ?? '').trim().replace(/^#/, '').replace(/\s+/g, ' ');
   if (name.length < 2 || name.length > 60) return null;
   const [stats, target, totalStories] = await Promise.all([
-    getKeywordStats([name]),
+    getKeywordStats([name], workspaceId),
     pool.query(`select id from tracking_targets where workspace_id = $1 and kind = 'keyword' and active and lower(query) = lower($2)`, [workspaceId, name]),
-    storyTotal(),
+    storyTotal(workspaceId),
   ]);
   return { kind: 'keyword', name, target_id: target.rows[0]?.id ?? null, totalStories, stats: stats.get(name.toLowerCase()) ?? EMPTY_KEYWORD };
 }

@@ -40,18 +40,9 @@ export async function saveDigestSettings(workspaceId, { frequency, destination }
   return { frequency, destination: to };
 }
 
-// Watchlist stories first, then the rest of the shared feed, up to MAX_STORIES.
+// The workspace's own stories, hottest first, up to MAX_STORIES. Nothing from other workspaces.
 export async function digestStories(workspaceId) {
-  const [mine, all] = await Promise.all([getFeed({ workspaceId, scope: 'watchlist' }), getFeed({ workspaceId })]);
-  const seen = new Set();
-  const out = [];
-  for (const story of [...mine, ...all]) {
-    if (seen.has(story.id)) continue;
-    seen.add(story.id);
-    out.push(story);
-    if (out.length === MAX_STORIES) break;
-  }
-  return out;
+  return (await getFeed({ workspaceId })).slice(0, MAX_STORIES);
 }
 
 function digestEmail(stories, { frequency, date }) {

@@ -1,16 +1,11 @@
 import Link from 'next/link';
 import { listPlans, listPriceList } from '../../../lib/accounts.js';
-import { PLATFORM_NAMES, dayRange, fmtNum, plural } from '../../../lib/format.js';
-import { checkSummary, pickSpecimen, proofSentences, sharpestContrast, sheetPanels } from '../../../lib/landing.js';
+import { fmtNum } from '../../../lib/format.js';
 import { TOPUP_PACKS, TRIAL } from '../../../lib/pricing.js';
 import { isSignedIn } from '../../../lib/session.js';
-import { getFeed, getStory, getTotals } from '../../../lib/stories.js';
-import CountUp from '../components/count-up.js';
-import FoldSheet from '../components/fold-sheet.js';
-import Heat from '../components/heat.js';
+import { getTotals } from '../../../lib/stories.js';
 import Icon from '../components/icons.js';
 import RateCard from '../components/rate-card.js';
-import { coverageLine } from '../components/story-card.js';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,7 +34,7 @@ const FAQ = [
   ['Which platforms do you read?', 'X, YouTube, LinkedIn, Instagram, TikTok and Reddit. A creator is followed on every platform they post to, and a subreddit counts as one source.'],
   [
     'How often does it update?',
-    'This week’s feed is refreshed weekly and is included in every plan, trial included. Daily collection for the creators you follow is switching on during the beta, and nothing is charged until it does.',
+    'The posts of who you follow are collected every day, and you can refresh on demand. Your stories are made only from who you follow, and nobody else sees them.',
   ],
   [
     'What is a credit?',
@@ -53,16 +48,10 @@ const FAQ = [
 ];
 
 export default async function Landing() {
-  const [stories, totals, plans, prices, signedIn] = await Promise.all([getFeed(), getTotals(), listPlans(), listPriceList(), isSignedIn()]);
-  const specimen = pickSpecimen(stories);
-  const story = specimen ? await getStory(specimen.id) : null;
-  const panels = story ? sheetPanels({ ...story, platform_strip: specimen.platform_strip }) : [];
-  const contrast = sharpestContrast(story);
-  const proof = proofSentences(story);
-  const checks = checkSummary(story);
+  // Stories are private to each workspace, so the public page shows none.
+  const [totals, plans, prices, signedIn] = await Promise.all([getTotals(), listPlans(), listPriceList(), isSignedIn()]);
   const start = signedIn ? { href: '/stories', label: 'Open your stories' } : { href: '/sign-up', label: `Start with ${fmtNum(TRIAL.credits)} free credits` };
   const planHref = signedIn ? '/billing' : '/sign-up';
-  const headline = specimen?.headline;
 
   return (
     <main className="landing">
@@ -90,65 +79,18 @@ export default async function Landing() {
                   {start.label}
                   <Icon name="arrow" size={17} />
                 </Link>
-                <Link className="btn ghost lg" href="#why">
-                  Why it matters
+                <Link className="btn ghost lg" href="#how">
+                  How it works
                 </Link>
               </div>
               <p className="ld-fine">
-                No card needed. Beta prices in rupees. This week: {fmtNum(totals.posts)} posts and {fmtNum(totals.comments)} comments in {plural(stories.length, 'story', 'stories')}.
+                No card needed. Beta prices in rupees. So far: {fmtNum(totals.posts)} posts and {fmtNum(totals.comments)} comments read.
               </p>
             </div>
           </div>
 
-          {specimen ? (
-            <FoldSheet
-              panels={panels}
-              caption={
-                <>
-                  <b>{specimen.main_character}</b> · {headline} · {dayRange(specimen.first_post_at, specimen.last_post_at)} · {coverageLine(specimen)} · <Heat value={specimen.heat} />
-                </>
-              }
-            />
-          ) : null}
         </div>
       </section>
-
-      {contrast ? (
-        <section className="ld-poster" id="why">
-          <div className="ld-wrap ld-poster-in">
-            <div>
-              <p className="ld-label">Why a sentiment score isn’t enough</p>
-              <h2 className="ld-h2">
-                “Mixed” is not a <em className="ld-em">verdict.</em>
-              </h2>
-              <p className="ld-sub">
-                Same story, same week, same creators. Social listening averages the reaction into one neutral number. Content-Story keeps the platforms apart, so you know
-                who is pushing back, who is defending you, and where to answer.
-              </p>
-            </div>
-            <div className="ld-pair">
-              <p className="ld-claim">“{contrast.title}”</p>
-              {[contrast.hi, contrast.lo].map((side) => (
-                <div key={side.platform} style={{ '--c': `var(--p-${side.platform})` }}>
-                  <p className="who">
-                    <i />
-                    {PLATFORM_NAMES[side.platform]} · comments
-                  </p>
-                  <p className="big">
-                    <CountUp value={side.agree_pct} />
-                    <sup>%</sup>
-                  </p>
-                  <div className="bar">
-                    <i style={{ width: `${side.agree_pct}%` }} />
-                  </div>
-                  <p className="t">of {plural(side.comments, 'comment')} agree</p>
-                </div>
-              ))}
-              <p className="foot">Counted by code from the comments collected. Never estimated by the model.</p>
-            </div>
-          </div>
-        </section>
-      ) : null}
 
       <section className="ld-section" id="how">
         <div className="ld-wrap">
@@ -179,64 +121,10 @@ export default async function Landing() {
               AI writes. <em className="ld-em">Code counts.</em>
             </h2>
             <p className="ld-sub">
-              If a number on a story page didn’t come from code, it’s a bug. {proof.length ? 'Hover a citation on the right: every one names the post or comment it came from.' : ''} A
-              story only publishes when every check passes.
+              If a number on a story page didn’t come from code, it’s a bug. Every citation names the post or comment it came from, and a story only publishes
+              when every check passes.
             </p>
           </div>
-          {story && proof.length ? (
-            <div className="ld-sheet">
-              <p className="ld-label">From this week’s story · as published</p>
-              <p className="story">
-                {proof.map((s, i) => (
-                  <span key={i}>
-                    {i ? ' ' : ''}
-                    {s.text}
-                    {s.cites.map((c) => (
-                      <span key={c.id} className="ld-cite">
-                        <button type="button" aria-label={`Source ${c.n}`}>
-                          {c.n}
-                        </button>
-                        <span className="pop">
-                          <b>{c.who}</b>
-                          {c.text}
-                          {c.url ? <em>Opens the source on the story page</em> : null}
-                        </span>
-                      </span>
-                    ))}
-                  </span>
-                ))}
-              </p>
-              <div className="ld-checks">
-                <div>
-                  <b>cite</b>
-                  <span>
-                    {plural(checks.cites, 'source')} in the narrative, each one a real post or comment
-                  </span>
-                  <s>{checks.pass ? 'pass' : 'review'}</s>
-                </div>
-                <div>
-                  <b>quote</b>
-                  <span>{plural(checks.quotes, 'quote')} matched word for word</span>
-                  <s>{checks.pass ? 'pass' : 'review'}</s>
-                </div>
-                <div>
-                  <b>count</b>
-                  <span>{plural(checks.counted, 'percentage')} computed from collected comments</span>
-                  <s>{checks.pass ? 'pass' : 'review'}</s>
-                </div>
-                <div>
-                  <b>length</b>
-                  <span>
-                    headline {plural(checks.headlineWords, 'word')} · narrative {plural(checks.sentences, 'sentence')}
-                  </span>
-                  <s>{checks.pass ? 'pass' : 'review'}</s>
-                </div>
-              </div>
-              <Link className="ld-more" href={`/stories/${story.id}`}>
-                Read the full story with every source <Icon name="arrow" size={14} />
-              </Link>
-            </div>
-          ) : null}
         </div>
       </section>
 

@@ -1,9 +1,11 @@
 // Story building: groups newly understood posts into new stories or attaches them to existing ones,
 // then for every story that changed runs the narrative builder, writer, platform lens and feed editor,
 // with code doing every number and check, and writes a new version. Stories are never deleted.
-// In the shared feed the AI editor publishes, holds or rejects stories and merges split pairs.
+// A workspace's following feed takes only posts from what it follows, publishes a story when its checks
+// pass and lets the AI merge split pairs. In the old shared feed the AI editor also decides publishing.
 import { createHash, randomUUID } from 'node:crypto';
 import { pool, tx } from '../lib/db.js';
+import { followedPost } from '../lib/followed.js';
 import { getSettings } from '../lib/settings.js';
 import { judgeSameStory, reviewStory } from './editor.js';
 import { MODELS, RETRY_MARKER, generateJson, loadPrompt } from './ai.js';
@@ -397,7 +399,7 @@ async function reviewSplitCandidates(ctx) {
       where s.feed_id = $1 and s.status not in ('merged', 'rejected') and s.first_post_at is not null`,
     [feed.id],
   );
-  const auto = ctx.shared && settings.auto_merge;
+  const auto = (ctx.shared || ctx.following) && settings.auto_merge;
   const threshold = Number(settings.merge_min_confidence);
   const kept = new Set();
   const counts = { added: 0, merged: 0, separate: 0, unsure: 0, failed: 0, person: 0 };
@@ -704,26 +706,34 @@ async function runPool(items, size, fn) {
 // `treatAsShared` is for tests only: a throwaway workspace feed gets the shared feed's AI editor and
 // merge rules, so no test story ever shows in the real shared feed.
 export async function buildStories({ runId = null, feedId, postIds = null, single = false, log = console.log, now = Date.now(), title = null, treatAsShared = false }) {
-  const { rows: feeds } = await pool.query('select id, workspace_id, name from feeds where id = $1', [feedId]);
+  const { rows: feeds } = await pool.query('select id, workspace_id, name, kind, grouped_post_ids from feeds where id = $1', [feedId]);
   const feed = feeds[0];
   if (!feed) throw new Error(`feed ${feedId} does not exist`);
   const nowMs = ms(now);
+  const startedAt = new Date();
   const ctx = {
     runId, workspaceId: feed.workspace_id, feed, log, now: nowMs, aliases: await loadAliases(),
-    shared: feed.workspace_id == null || treatAsShared, settings: await getSettings(),
+    shared: feed.workspace_id == null || treatAsShared, following: feed.kind === 'following' && !treatAsShared, settings: await getSettings(),
   };
 
-  // The window: posts with a card that aren't in any (non-merged) story of this feed yet.
+  // The window: posts with a card that aren't in any (non-merged) story of this feed yet. A workspace's
+  // following feed only takes posts from what that workspace follows.
   const { rows: windowRows } = await pool.query(
     `select p.id from posts p join story_cards sc on sc.post_id = p.id
       where (case when $2::text[] is null then sc.newsworthy and p.published_at >= $3 and p.published_at <= $4
                   else p.id = any($2::text[]) and ($5 or sc.newsworthy) end)
+        and ($6::uuid is null or ${followedPost('p', '$6::uuid')})
         and not exists (select 1 from story_posts sp join stories s on s.id = sp.story_id
                          where sp.post_id = p.id and s.feed_id = $1 and s.status <> 'merged')
       order by p.published_at`,
-    [feed.id, postIds, new Date(nowMs - windowDays() * DAY), new Date(nowMs), single],
+    [feed.id, postIds, new Date(nowMs - windowDays() * DAY), new Date(nowMs), single, ctx.following ? feed.workspace_id : null],
   );
   const windowIds = windowRows.map((r) => r.id);
+
+  // Posts the grouping model already saw and left out come back every run; only ask again when a post is
+  // new to the window (just understood, or from a follow added or resumed) since the last grouping.
+  const lastGrouped = new Set(feed.grouped_post_ids ?? []);
+  const unchanged = ctx.following && !postIds && feed.grouped_post_ids != null && windowIds.length > 0 && windowIds.every((id) => lastGrouped.has(id));
 
   const { rows: existing } = await pool.query(
     `select ${EXISTING_COLUMNS}
@@ -735,11 +745,15 @@ export async function buildStories({ runId = null, feedId, postIds = null, singl
   );
 
   let plans = [];
+  let grouped = false;
   if (single) {
     // One story from all the given posts: the existing story that holds any of them, else a new one.
     const target = existing.find((s) => s.post_ids.some((id) => postIds?.includes(id))) ?? null;
     if (windowIds.length || target) plans = [{ ref: target?.id ?? `report-${feed.id}`, existing: target, newPostIds: windowIds, title: title ?? target?.headline ?? '', why: title ? `Report: ${title}` : null, confidence: null }];
+  } else if (unchanged) {
+    log(`[stories] nothing new since the last grouping; ${windowIds.length} earlier ${windowIds.length === 1 ? 'post stays' : 'posts stay'} out of stories`);
   } else if (windowIds.length) {
+    grouped = true;
     const windowWorld = await loadWorld(windowIds);
     const live = existing.filter((s) => LIVE.includes(s.status));
     log(`[stories] grouping ${windowIds.length} posts with ${live.length} live stories on ${MODELS.strong()}; this call can take several minutes`);
@@ -770,6 +784,12 @@ export async function buildStories({ runId = null, feedId, postIds = null, singl
     });
   };
   const built = await buildAll(plans);
+
+  // The grouping counts as done only when every story that took new posts was written; otherwise the
+  // next run groups those posts again rather than leaving them out for good.
+  if (grouped && ctx.following && !postIds && built.every((b, i) => !plans[i]?.newPostIds.length || !b?.error)) {
+    await pool.query('update feeds set grouped_at = $2, grouped_post_ids = $3 where id = $1', [feed.id, startedAt, windowIds]);
+  }
 
   // A report whose posts are already in its story, with nothing new to build, still names that story.
   if (single && !plans.length) {

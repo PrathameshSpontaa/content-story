@@ -1,11 +1,12 @@
 // Story data for the web app, read from Postgres. Pages never write SQL themselves.
 import { pool } from './db.js';
 import { PLATFORM_NAMES, plural, truncate } from './format.js';
-import { STORY_TEXT, likeEscaped, matchesWord } from './watchlist.js';
+import { STORY_TEXT, creatorPhoto, likeEscaped, matchesWord } from './watchlist.js';
 
 // A story leads the feed only if independent sources covered it and people reacted.
 export const TOP = { minSources: 2, minComments: 10 };
 export const MIN_COMMENTS_FOR_PCT = 5;
+const UUID = /^[0-9a-f-]{36}$/i;
 
 const LATEST_PASSED_VERSION = `
   join lateral (
@@ -38,9 +39,15 @@ export function whyNotTop({ sources, creators, audience }) {
   return '';
 }
 
-// The shared feed, optionally narrowed to a workspace's watchlist or saved stories, a category,
-// a platform, or a search. `tracked` names the watchlist entries each story involves.
-export async function getFeed({ workspaceId = null, scope = 'all', category = '', platform = '', q = '', followTargetId = '' } = {}) {
+// Following nobody means no stories, even ones built before everything was unfollowed ($1 is the workspace).
+const FOLLOWS_SOMEONE = `exists (select 1 from tracking_targets ft where ft.workspace_id = $1 and ft.active)`;
+
+// A workspace's own stories: the ones built from what it follows (any scope but 'saved'), or the ones it
+// saved from any of its feeds (scope 'saved'), optionally narrowed to one follow, a category, a platform
+// or a search. `tracked` names the follows each story involves. Stories are never shared between
+// workspaces, so without a workspace there are none.
+export async function getFeed({ workspaceId = null, scope = 'following', category = '', platform = '', q = '', followTargetId = '' } = {}) {
+  if (!UUID.test(String(workspaceId ?? ''))) return [];
   const params = [workspaceId];
   const param = (value) => {
     params.push(value);
@@ -55,8 +62,8 @@ export async function getFeed({ workspaceId = null, scope = 'all', category = ''
     where.push(`concat_ws(' ', v.feed_edit ->> 'headline', v.feed_edit ->> 'dek', v.written ->> 'headline', v.narrative #>> '{main_character,name}', s.category,
                           jsonb_path_query_array(v.written, '$.narrative[*].sentence')::text) ilike ${likeEscaped(param(q))}`);
   }
-  if (scope === 'watchlist') where.push(`exists (select 1 from tracking_targets t where t.workspace_id = $1 and t.active and ${TARGET_MATCHES_STORY})`);
   if (scope === 'saved') where.push('exists (select 1 from saved_stories ss where ss.story_id = s.id and ss.workspace_id = $1)');
+  else where.push(`f.kind = 'following' and ${FOLLOWS_SOMEONE}`);
   if (followTargetId && /^[0-9a-f-]{36}$/i.test(followTargetId)) {
     where.push(`exists (select 1 from tracking_targets t where t.workspace_id = $1 and t.id = ${param(followTargetId)}::uuid and ${TARGET_MATCHES_STORY})`);
   }
@@ -80,7 +87,7 @@ export async function getFeed({ workspaceId = null, scope = 'all', category = ''
                    where t.workspace_id = $1::uuid and t.active and ${TARGET_MATCHES_STORY}) as tracked,
             exists (select 1 from saved_stories ss where ss.story_id = s.id and ss.workspace_id = $1::uuid) as saved
        from stories s
-       join feeds f on f.id = s.feed_id and f.workspace_id is null
+       join feeds f on f.id = s.feed_id and f.workspace_id = $1::uuid
        ${LATEST_PASSED_VERSION}
       where ${where.join(' and ')}
       order by s.heat desc nulls last`,
@@ -89,29 +96,57 @@ export async function getFeed({ workspaceId = null, scope = 'all', category = ''
   return rows.map((r) => ({ ...r, whyNotTop: whyNotTop(r) }));
 }
 
-export const getSharedFeed = () => getFeed();
-
-// Story counts for the tabs: everything this week, what involves who you follow, and saved.
+// Story counts for the tabs: the workspace's own stories and the ones it saved. `total` equals
+// `for_you`, for callers that still read it.
 export async function getFeedCounts(workspaceId) {
   const { rows } = await pool.query(
-    `select count(*)::int as total,
-            count(*) filter (where exists (select 1 from tracking_targets t where t.workspace_id = $1 and t.active and ${TARGET_MATCHES_STORY}))::int as for_you,
+    `select count(*) filter (where f.kind = 'following' and ${FOLLOWS_SOMEONE})::int as for_you,
             count(*) filter (where exists (select 1 from saved_stories ss where ss.story_id = s.id and ss.workspace_id = $1))::int as saved
        from stories s
-       join feeds f on f.id = s.feed_id and f.workspace_id is null
+       join feeds f on f.id = s.feed_id and f.workspace_id = $1
        ${LATEST_PASSED_VERSION}
       where s.published_at is not null and s.status not in ('merged', 'rejected')`,
     [workspaceId],
   );
-  return rows[0];
+  return { ...rows[0], total: rows[0].for_you };
 }
 
-export async function getCategories() {
+// Recent posts from the creators a workspace follows that aren't in one of its stories: an opinion, a
+// personal update, or a post nobody else covered. Each comes with its summary and the biggest groups of
+// what commenters said. `creatorId` narrows to one creator.
+export async function getFollowedPosts(workspaceId, { platform = '', q = '', creatorId = '', days = 7, limit = 40 } = {}) {
+  if (!UUID.test(String(workspaceId ?? ''))) return [];
+  const params = [workspaceId, days, limit];
+  const param = (value) => {
+    params.push(value);
+    return `$${params.length}`;
+  };
+  const where = [];
+  if (platform) where.push(`p.platform::text = ${param(platform)}`);
+  if (UUID.test(String(creatorId ?? ''))) where.push(`c.id = ${param(creatorId)}::uuid`);
+  if (q) where.push(`concat_ws(' ', c.name, h.handle, sc.about, p.text) ilike ${likeEscaped(param(q))}`);
   const { rows } = await pool.query(
-    `select distinct s.category from stories s join feeds f on f.id = s.feed_id and f.workspace_id is null
-      where s.published_at is not null and s.category is not null order by 1`,
+    `select p.id, p.platform::text as platform, p.kind, p.url, p.published_at, left(coalesce(nullif(p.text, ''), p.transcript, ''), 400) as text,
+            c.id as creator_id, c.name as creator, h.handle, ${creatorPhoto('c.id')} as photo,
+            sc.about, sc.type,
+            m.likes::float as likes, m.comments::float as comments, m.views::float as views,
+            coalesce((select json_agg(json_build_object('label', g.label, 'point', g.point, 'size', cardinality(g.comment_ids)) order by cardinality(g.comment_ids) desc)
+                        from comment_groups g where g.post_id = p.id), '[]'::json) as reactions
+       from posts p
+       join creator_handles h on h.id = p.handle_id
+       join creators c on c.id = h.creator_id
+       left join story_cards sc on sc.post_id = p.id
+       left join lateral (select likes, comments, views from post_metrics pm where pm.post_id = p.id order by pm.captured_at desc limit 1) m on true
+      where p.published_at > now() - make_interval(days => $2)
+        and exists (select 1 from tracking_targets t where t.workspace_id = $1 and t.active and t.kind = 'creator' and t.creator_id = c.id and p.platform = any(t.platforms))
+        and not exists (select 1 from story_posts sp join stories s on s.id = sp.story_id join feeds f on f.id = s.feed_id and f.workspace_id = $1
+                         where sp.post_id = p.id and s.published_at is not null and s.status not in ('merged', 'rejected'))
+        ${where.map((w) => `and ${w}`).join(' ')}
+      order by p.published_at desc
+      limit $3`,
+    params,
   );
-  return rows.map((r) => r.category);
+  return rows.map((r) => ({ ...r, reactions: (r.reactions ?? []).slice(0, 2) }));
 }
 
 export async function getTotals() {
@@ -134,8 +169,8 @@ async function callerWorkspaceId() {
   }
 }
 
-// A published story from the shared feed, or from the caller's own workspace feed (a finished
-// report). `workspaceId` names the caller; when omitted it is read from the signed-in session.
+// A published story from one of the caller's own feeds: its stories or a finished report. Another
+// workspace's story is not found. `workspaceId` names the caller; when omitted it is read from the session.
 export async function getStory(id, workspaceId) {
   if (!/^[0-9a-f-]{36}$/i.test(String(id))) return null;
   const callerId = workspaceId === undefined ? await callerWorkspaceId() : workspaceId;
@@ -147,7 +182,7 @@ export async function getStory(id, workspaceId) {
        join feeds f on f.id = s.feed_id
        ${LATEST_PASSED_VERSION}
       where s.id = $1 and s.published_at is not null
-        and (f.workspace_id is null or f.workspace_id = $2::uuid)`,
+        and f.workspace_id = $2::uuid`,
     [id, /^[0-9a-f-]{36}$/i.test(String(callerId ?? '')) ? callerId : null],
   );
   const story = rows[0];
@@ -197,7 +232,8 @@ export async function toggleSaved(workspaceId, userId, storyId) {
   if (removed.rowCount) return false;
   await pool.query(
     `insert into saved_stories (workspace_id, story_id, saved_by)
-     select $1, s.id, $3 from stories s where s.id = $2 and s.published_at is not null
+     select $1, s.id, $3 from stories s join feeds f on f.id = s.feed_id and f.workspace_id = $1
+      where s.id = $2 and s.published_at is not null
      on conflict do nothing`,
     [workspaceId, storyId, userId],
   );

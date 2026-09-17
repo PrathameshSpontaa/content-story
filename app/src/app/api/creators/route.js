@@ -33,12 +33,12 @@ export async function GET(request) {
       const known = name && communities.some((c) => c.name.toLowerCase() === name.toLowerCase());
       return NextResponse.json({ kind: 'communities', communities, candidate: name && !known ? name : null });
     }
-    if (all && found.creator) found.creator = (await withCreatorStats([found.creator]))[0];
+    if (all && found.creator) found.creator = (await withCreatorStats([found.creator], workspaceId))[0];
     return NextResponse.json({ kind: 'lookup', ...found });
   }
 
   const creators = await searchCreators(workspaceId, q);
   if (!all) return NextResponse.json({ kind: 'search', creators });
-  const [withStats, communities, keyword] = await Promise.all([withCreatorStats(creators), searchCommunities(workspaceId, q), previewKeyword(workspaceId, q)]);
+  const [withStats, communities, keyword] = await Promise.all([withCreatorStats(creators, workspaceId), searchCommunities(workspaceId, q), previewKeyword(workspaceId, q)]);
   return NextResponse.json({ kind: 'search', creators: withStats, communities, keyword });
 }
