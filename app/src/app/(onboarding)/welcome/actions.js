@@ -42,5 +42,5 @@ export async function skipOnboardingAction() {
   await skipOnboarding(session.workspace.id);
   await payReferrer(session.workspace.id);
   revalidatePath('/', 'layout');
-  redirect('/stories?tab=all');
+  redirect('/stories');
 }

@@ -62,6 +62,9 @@ const VARS = [
   { key: 'GEMINI_DAILY_CAP_USD', optional: ['worker'], def: '5' },
   { key: 'COLLECT_MIN_HOURS', optional: ['worker'], def: '', note: 'leave unset on Render: the admin settings interval decides; set only to override for a manual run' },
   { key: 'COMMENTS_PER_RUN', optional: ['worker'], def: '1500', note: 'comment budget per collection run' },
+  { key: 'KEYWORD_MIN_HOURS', optional: ['worker'], def: '20', note: 'a brand or topic is searched at most once in this many hours' },
+  { key: 'FINDER_MODEL', optional: ['web'], def: 'the strong model', note: 'model that finds creators’ channels with web search' },
+  { key: 'FINDER_DAILY_LIMIT', optional: ['web'], def: '60', note: 'paid channel lookups per workspace per day' },
   { key: 'STORY_DORMANT_DAYS', optional: ['worker'], def: '4' },
   { key: 'DRYRUN_DATA', optional: ['worker'], def: '', note: 'local only, with PIPELINE_PROVIDER=fake' },
 

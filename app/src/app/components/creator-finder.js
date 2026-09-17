@@ -25,8 +25,23 @@ async function findCreators(q, { platform, all } = {}) {
   return res.json();
 }
 
+// The channel finder: a name or one profile link in, every channel it found out (see lib/finder.js).
+// Takes 10–60 seconds. Throws with a message a person can act on.
+export async function askFinder(body) {
+  const res = await fetch('/api/creators/find', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? 'We couldn’t search for them just now. Paste their profile links instead.');
+  return data;
+}
+
+export const Spinner = () => <span className="spin-dot" aria-hidden="true" />;
+
 // nameGuessed: the name came from a handle, so the form opens with it selected for typing over.
-const blankComposer = (patch) => ({ name: '', nameGuessed: false, profiles: [], link: '', hint: null, askPlatform: null, checking: false, rowError: null, existing: null, error: null, ...patch });
+// finding: the finder is looking for their channels; checked: it has, so the creator is saved as checked.
+const blankComposer = (patch) => ({
+  name: '', nameGuessed: false, profiles: [], link: '', hint: null, askPlatform: null, checking: false, rowError: null, existing: null, error: null,
+  finding: false, checked: false, about: '', foundNote: null, ...patch,
+});
 
 const slotName = (kind) => (kind === 'keyword' ? 'brand or topic' : 'creator or subreddit');
 const keyOf = (kind, item) => (kind === 'creator' ? item.id : `${kind}:${item.name.toLowerCase()}`);
@@ -67,8 +82,8 @@ function SourceSummary({ kind, stats, target }) {
 }
 
 // One box to find or add what to follow. Typing a name searches everyone we know; pasting a
-// profile link shows whether we already cover them, or opens a short form to add them with each
-// platform they post on.
+// profile link shows whether we already cover them. Someone new opens a short form where the channel
+// finder fills in every platform they post on; "Add several at once" does the same for a pasted list.
 // mode 'follow' (Following page) follows straight away, also finds subreddits and brands, and shows
 // each result's week; onToast and onLimit let the page report results its own way, and onFollowed
 // gets each successful follow's result (whether collection started, the last slot).
@@ -82,18 +97,50 @@ export default function CreatorFinder({ mode = 'follow', pickedIds = [], onPick,
   const [overrides, setOverrides] = useState({});
   const [busyKey, setBusyKey] = useState(null);
   const [open, setOpen] = useState(false);
+  const [bulk, setBulk] = useState(false);
   const [pending, startTransition] = useTransition();
   const latest = useRef(0);
+  const finderRun = useRef(0);
   const root = useRef(null);
   const composerRef = useRef(composer);
   composerRef.current = composer;
   const q = query.trim();
 
   const patchComposer = (patch) => setComposer((c) => (c ? { ...c, ...patch } : c));
+  // A new creator's form opens and the finder starts looking for all their channels straight away.
   const openComposer = (patch) => {
     setNotice(null);
     setComposer(blankComposer(patch));
+    const link = patch.profiles?.[0]?.url ?? '';
+    const name = patch.nameGuessed ? '' : String(patch.name ?? '').trim();
+    if (link || name.length >= 2) findChannels({ name, link });
   };
+
+  async function findChannels({ name, link }) {
+    const run = ++finderRun.current;
+    setComposer((c) => c && { ...c, finding: true, foundNote: null });
+    let data;
+    try {
+      data = await askFinder({ name, link });
+    } catch (err) {
+      if (run === finderRun.current) setComposer((c) => c && { ...c, finding: false, foundNote: err.message });
+      return;
+    }
+    if (run !== finderRun.current) return;
+    setComposer((c) => {
+      if (!c) return c;
+      if (data.existing) return { ...c, finding: false, existing: data.existing, about: data.about ?? '' };
+      const fresh = (data.channels ?? []).filter((ch) => !c.profiles.some((p) => p.platform === ch.platform)).map((ch) => ({ platform: ch.platform, handle: ch.handle, url: ch.url, found: true }));
+      const profiles = [...c.profiles, ...fresh];
+      const note = fresh.length
+        ? `Found ${fresh.length === 1 ? '1 channel' : `${fresh.length} channels`}. Remove any that aren’t them.`
+        : profiles.length
+          ? 'No other channels found. Paste a link if they post somewhere else.'
+          : 'We couldn’t find their channels. Paste one of their profile links.';
+      const guessed = c.nameGuessed || !c.name.trim();
+      return { ...c, finding: false, checked: true, profiles, name: guessed && data.name ? data.name : c.name, nameGuessed: guessed && !data.name, about: data.about ?? '', foundNote: note };
+    });
+  }
 
   useEffect(() => {
     if (q.length < 2) {
@@ -129,6 +176,7 @@ export default function CreatorFinder({ mode = 'follow', pickedIds = [], onPick,
   }, [following]);
 
   const reset = () => {
+    finderRun.current += 1;
     setQuery('');
     setFound(null);
     setComposer(null);
@@ -225,7 +273,7 @@ export default function CreatorFinder({ mode = 'follow', pickedIds = [], onPick,
       }
       if (!profiles.length) return patchComposer({ rowError: 'Add at least one profile link.' });
       const name = composerRef.current?.name.trim() || nameFromHandle(profiles[0].handle);
-      const res = await createCreatorAction({ name, profiles: profiles.map((p) => ({ platform: p.platform, input: p.url })), follow: mode !== 'pick' });
+      const res = await createCreatorAction({ name, profiles: profiles.map((p) => ({ platform: p.platform, input: p.url })), follow: mode !== 'pick', checked: composerRef.current?.checked === true });
       if (res.error) return patchComposer({ error: res.existing ? null : res.error, existing: res.existing ?? null });
       reset();
       if (mode === 'pick') {
@@ -387,7 +435,7 @@ export default function CreatorFinder({ mode = 'follow', pickedIds = [], onPick,
           )}
           <button type="button" className="finder-add" onClick={() => openComposer({ name: q })}>
             <Icon name="plus" size={16} />
-            {creators.length ? `Not listed? Add “${q}” as a new creator` : `Add “${q}” as a new creator`}
+            {creators.length ? `Not listed? Find “${q}” on every platform` : `Find “${q}” on every platform`}
           </button>
         </div>
       );
@@ -469,6 +517,24 @@ export default function CreatorFinder({ mode = 'follow', pickedIds = [], onPick,
         </div>
         {panel}
       </div>
+      {!composer && !bulk ? (
+        <button type="button" className="linkbtn finder-bulk-toggle" onClick={() => setBulk(true)}>
+          Add several at once
+        </button>
+      ) : null}
+      {bulk ? (
+        <BulkAdd
+          mode={mode}
+          pickedIds={pickedIds}
+          onPick={onPick}
+          onFollowed={onFollowed}
+          onClose={() => setBulk(false)}
+          onDone={(text) => {
+            setBulk(false);
+            say(text);
+          }}
+        />
+      ) : null}
       {notice ? (
         <p role="status" className={`notice ${notice.ok ? 'ok' : 'err'}`}>
           {notice.text}
@@ -501,7 +567,7 @@ function Composer({ state, mode, pending, followingExisting, onChange, onAdd, on
     : state.profiles.length
       ? 'Paste another profile link'
       : 'Paste a profile link, like instagram.com/name';
-  const canSubmit = !pending && !state.checking && (state.profiles.length > 0 || state.link.trim());
+  const canSubmit = !pending && !state.checking && !state.finding && (state.profiles.length > 0 || state.link.trim());
 
   return (
     <section className="composer" aria-labelledby="composer-title">
@@ -527,10 +593,17 @@ function Composer({ state, mode, pending, followingExisting, onChange, onAdd, on
           />
         </label>
       </div>
+      {state.about ? <p className="composer-about">{state.about}</p> : null}
 
       <div className="composer-profiles">
         <span className="composer-label">Profiles</span>
-        <p className="composer-sub">Add every platform they post on, so their posts join up into one story.</p>
+        <p className="composer-sub">We look for every platform they post on. Open a link to check it’s them, remove any that aren’t, or paste one we missed.</p>
+        {state.finding ? (
+          <p className="composer-finding" role="status">
+            <Spinner /> Looking for them on X, YouTube, LinkedIn, Instagram and TikTok. This takes up to a minute.
+          </p>
+        ) : null}
+        {state.foundNote ? <p className="composer-found">{state.foundNote}</p> : null}
         {state.profiles.length ? (
           <ul className="profile-rows">
             {state.profiles.map((p) => (
@@ -539,6 +612,7 @@ function Composer({ state, mode, pending, followingExisting, onChange, onAdd, on
                 <span className="pr-platform">{PLATFORM_NAMES[p.platform]}</span>
                 <a href={p.url} target="_blank" rel="noopener noreferrer">
                   {p.handle}
+                  {p.found ? <span className="found-tag">Found</span> : null}
                 </a>
                 <button type="button" className="iconbtn sm" aria-label={`Remove ${PLATFORM_NAMES[p.platform]} profile`} onClick={() => onRemove(p.platform)}>
                   <Icon name="close" size={14} />
@@ -622,7 +696,7 @@ function Composer({ state, mode, pending, followingExisting, onChange, onAdd, on
       {state.existing ? (
         <div className="notice info existing" role="status">
           <span>
-            That profile belongs to <b>{state.existing.name}</b>, who’s already on Content-Story.
+            <b>{state.existing.name}</b> is already on Content-Story.
           </span>
           <button type="button" className="btn primary sm" disabled={followingExisting} onClick={() => onUseExisting(state.existing)}>
             {followingExisting ? (mode === 'pick' ? 'Already picked' : 'Already following') : mode === 'pick' ? `Pick ${state.existing.name}` : `Follow ${state.existing.name}`}
@@ -641,8 +715,189 @@ function Composer({ state, mode, pending, followingExisting, onChange, onAdd, on
           Cancel
         </button>
         <button type="button" className="btn primary" disabled={!canSubmit} onClick={onSubmit}>
-          {pending ? 'Adding…' : mode === 'pick' ? `Add${name ? ` ${name}` : ' creator'}` : `Follow${name ? ` ${name}` : ''}`}
+          {pending ? 'Adding…' : state.finding ? 'Finding channels…' : mode === 'pick' ? `Add${name ? ` ${name}` : ' creator'}` : `Follow${name ? ` ${name}` : ''}`}
         </button>
+      </div>
+    </section>
+  );
+}
+
+const BULK_MAX = 25;
+
+function bulkNote(r, pick) {
+  if (r.status === 'waiting') return 'Waiting…';
+  if (r.status === 'finding') return 'Finding them on every platform…';
+  if (r.status === 'failed') return r.error;
+  if (r.status === 'done') return pick ? 'Picked' : 'Following';
+  if (r.existing) return r.already ? (pick ? 'Already picked' : 'Already following') : 'Already on Content-Story';
+  return r.about || `Found on ${plural(r.channels.length, 'platform')}`;
+}
+
+// Several creators at once: names or profile links, one per line. Each is matched to someone we already
+// cover or found on every platform, then all the ticked ones are followed (or picked) in one go.
+function BulkAdd({ mode, pickedIds, onPick, onFollowed, onClose, onDone }) {
+  const pick = mode === 'pick';
+  const [text, setText] = useState('');
+  const [rows, setRows] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const patch = (key, p) => setRows((list) => list?.map((r) => (r.key === key ? { ...r, ...p } : r)) ?? list);
+  const known = (creator) => {
+    const already = pick ? pickedIds.includes(creator.id) : Boolean(creator.target_id);
+    return { status: 'ready', name: creator.name, channels: creator.handles ?? [], existing: creator, already, on: !already };
+  };
+
+  async function resolve(row) {
+    patch(row.key, { status: 'finding' });
+    try {
+      let data;
+      if (looksLikeProfile(row.input)) {
+        const look = await findCreators(row.input);
+        if (look.kind === 'lookup' && look.status === 'existing') return patch(row.key, known(look.creator));
+        if (look.kind !== 'lookup' || look.status !== 'new') throw new Error(look.message ?? 'Paste a full profile link, like instagram.com/name.');
+        data = await askFinder({ link: row.input });
+      } else {
+        const search = await findCreators(row.input);
+        const same = (search.creators ?? []).find((c) => c.name.toLowerCase() === row.input.toLowerCase());
+        if (same) return patch(row.key, known(same));
+        data = await askFinder({ name: row.input });
+      }
+      if (data.existing) return patch(row.key, known(data.existing));
+      if (!data.channels?.length) throw new Error('No channels found. Try one of their profile links.');
+      patch(row.key, { status: 'ready', name: data.name || row.input, about: data.about, channels: data.channels, existing: null, on: true });
+    } catch (err) {
+      patch(row.key, { status: 'failed', error: err.message, on: false });
+    }
+  }
+
+  async function start() {
+    const lines = [...new Map(text.split(/[\n\t]/).map((l) => l.trim()).filter((l) => l.length >= 2).map((l) => [l.toLowerCase(), l])).values()];
+    if (!lines.length) return setError('Paste at least one name or profile link.');
+    setError(lines.length > BULK_MAX ? `Only the first ${BULK_MAX} are added this time.` : null);
+    const list = lines.slice(0, BULK_MAX).map((input, i) => ({ key: `${i}:${input}`, input, status: 'waiting', on: false }));
+    setRows(list);
+    const queue = [...list];
+    await Promise.all(
+      Array.from({ length: 3 }, async () => {
+        while (queue.length) await resolve(queue.shift());
+      }),
+    );
+  }
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    let done = 0;
+    for (const r of rows.filter((x) => x.on && x.status === 'ready')) {
+      let res;
+      if (r.existing && pick) {
+        onPick?.(r.existing);
+        patch(r.key, { status: 'done', on: false });
+        done += 1;
+        continue;
+      }
+      if (r.existing) res = await followCreatorByIdAction(r.existing.id);
+      else {
+        res = await createCreatorAction({ name: r.name, profiles: r.channels.map((c) => ({ platform: c.platform, input: c.url })), follow: !pick, checked: true });
+        // Someone added them in the meantime: use that creator instead.
+        if (res.error && res.existing) {
+          if (pick) {
+            onPick?.(res.existing);
+            patch(r.key, { status: 'done', on: false });
+            done += 1;
+            continue;
+          }
+          res = await followCreatorByIdAction(res.existing.id);
+        }
+      }
+      if (res.error) {
+        patch(r.key, { status: 'failed', error: res.error, on: false });
+        if (res.limit) {
+          setError(res.error);
+          break;
+        }
+        continue;
+      }
+      if (pick) onPick?.(res.creator, { created: true });
+      else onFollowed?.(res);
+      patch(r.key, { status: 'done', on: false });
+      done += 1;
+    }
+    setSaving(false);
+    if (done) onDone?.(`${pick ? 'Picked' : 'Following'} ${done === 1 ? '1 creator' : `${done} creators`}.${pick ? '' : ' Collecting their posts now.'}`);
+  }
+
+  const finding = rows?.some((r) => r.status === 'waiting' || r.status === 'finding');
+  const chosen = rows?.filter((r) => r.on && r.status === 'ready').length ?? 0;
+
+  return (
+    <section className="composer bulk" aria-labelledby="bulk-title">
+      <div className="composer-head">
+        <h3 id="bulk-title">Add several creators</h3>
+        <button type="button" className="iconbtn sm" aria-label="Close" onClick={onClose}>
+          <Icon name="close" size={15} />
+        </button>
+      </div>
+      {!rows ? (
+        <label className="field">
+          <span>Names or profile links, one per line</span>
+          <textarea rows={6} value={text} onChange={(e) => setText(e.target.value)} placeholder={'Ritu David\ninstagram.com/thevarunmayya\nyoutube.com/@mkbhd'} spellCheck={false} />
+        </label>
+      ) : (
+        <ul className="bulk-rows" aria-live="polite">
+          {rows.map((r) => (
+            <li key={r.key} className={`bulk-row ${r.status}`}>
+              <input
+                type="checkbox"
+                checked={r.on}
+                disabled={r.status !== 'ready' || r.already || saving}
+                onChange={(e) => patch(r.key, { on: e.target.checked })}
+                aria-label={`${pick ? 'Pick' : 'Follow'} ${r.name ?? r.input}`}
+              />
+              <span className="bulk-body">
+                <span className="nameline">
+                  <b>{r.name ?? r.input}</b>
+                  {r.channels?.length ? (
+                    <span className="marks">
+                      {r.channels.map((c) => (
+                        <a key={c.platform} href={c.url} target="_blank" rel="noopener noreferrer" title={`${PLATFORM_NAMES[c.platform]}: ${c.handle}`}>
+                          <PlatformMark platform={c.platform} size="xs" />
+                        </a>
+                      ))}
+                    </span>
+                  ) : null}
+                </span>
+                <span className="pick-meta">
+                  {r.status === 'finding' ? <Spinner /> : null} {bulkNote(r, pick)}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {!rows ? (
+        <p className="composer-note">
+          Paste up to {BULK_MAX}, for example a column from a spreadsheet. We find each one on X, YouTube, LinkedIn, Instagram and TikTok; tap a platform icon to check it’s them.
+        </p>
+      ) : null}
+      {error ? (
+        <p className="notice err" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="composer-foot">
+        <button type="button" className="btn ghost" onClick={onClose}>
+          {rows && !finding ? 'Close' : 'Cancel'}
+        </button>
+        {!rows ? (
+          <button type="button" className="btn primary" disabled={!text.trim()} onClick={start}>
+            Find them
+          </button>
+        ) : (
+          <button type="button" className="btn primary" disabled={finding || saving || !chosen} onClick={save}>
+            {saving ? 'Adding…' : finding ? 'Finding…' : `${pick ? 'Pick' : 'Follow'} ${chosen === 1 ? '1 creator' : `${chosen} creators`}`}
+          </button>
+        )}
       </div>
     </section>
   );

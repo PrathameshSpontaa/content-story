@@ -221,6 +221,7 @@ async function listCreators(workspaceId) {
             ${creatorPhoto('c.id')} as photo,
             bool_or(h.verified) or bool_or(h.last_collected_at is not null)
               or exists (select 1 from posts p join creator_handles ch on ch.id = p.handle_id where ch.creator_id = c.id) as collected,
+            c.channels_checked_at is not null as channels_checked,
             t.id as target_id, t.active
        from creators c
        join creator_handles h on h.creator_id = c.id
@@ -295,6 +296,7 @@ export async function getFollowing(workspaceId) {
       handles: c.handles,
       photo: c.photo,
       collected: c.collected,
+      channelsChecked: c.channels_checked,
       follow: followState(c),
       stats: withChannels(sourceStats.get(c.id), c.handles.map((h) => h.platform)),
     })),

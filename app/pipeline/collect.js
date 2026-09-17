@@ -38,17 +38,22 @@ const FLOOR = {
 // The hard cap is the estimate from the PRICE table with room for start fees and overshoot.
 export const capFor = (actor, estimate) => Math.max(FLOOR[actor] ?? 0.01, Math.ceil((estimate * 1.5 + 0.01) * 100) / 100);
 
-// Posts fetched per handle per run, and how deep the comment pass goes on the best posts.
+// Posts fetched per handle per run, and how deep the comment pass goes on the best posts. Comment
+// grouping reads at most 80 comments a post and groups form well from 50, so tracked sources take 50.
 const POSTS_PER = { x: 20, instagram: 6, linkedin: 6, youtube: 4, tiktok: 5, reddit: 6 };
-const REDDIT_COMMENTS = 50;
+const REDDIT_COMMENTS = 25;
 export const COMMENT_PLAN = {
-  x: { posts: 15, per: 100 },
+  x: { posts: 15, per: 50 },
   instagram: { posts: 8, per: 50 },
-  linkedin: { posts: 8, per: 100 },
-  youtube: { posts: 8, per: 100 },
-  tiktok: { posts: 8, per: 100 },
+  linkedin: { posts: 8, per: 50 },
+  youtube: { posts: 8, per: 50 },
+  tiktok: { posts: 8, per: 50 },
 };
+// Search results: a report (paid per story) reads deeper than a followed brand or topic, which is
+// searched every day.
 const SEARCH_PLAN = { x: { posts: 5, per: 100 }, youtube: { posts: 4, per: 100 }, tiktok: { posts: 4, per: 100 } };
+const KEYWORD_PLAN = { x: { posts: 5, per: 50 }, youtube: { posts: 4, per: 50 }, tiktok: { posts: 4, per: 50 } };
+const REDDIT_SEARCH_COMMENTS = { report: 30, keyword: 15 };
 
 const envInt = (name, fallback) => (Number.isFinite(Number(process.env[name])) && process.env[name] !== '' ? Number(process.env[name]) : fallback);
 const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
@@ -161,7 +166,8 @@ function postJobs({ byPlatform, communities, now, since }) {
 }
 
 // Search inputs per platform (actors.md). Instagram and LinkedIn have no search; they are skipped.
-function searchJobs({ query, platforms, from, to, log }) {
+function searchJobs({ query, platforms, from, to, log, purpose = 'report' }) {
+  const redditComments = REDDIT_SEARCH_COMMENTS[purpose];
   const jobs = [];
   const label = `search-${slug(query)}`;
   const items = envInt('SEARCH_ITEMS', 40);
@@ -189,11 +195,11 @@ function searchJobs({ query, platforms, from, to, log }) {
       },
     });
     else if (platform === 'reddit') jobs.push({
-      platform, label, actor: ACTORS.reddit, estimate: items * (PRICE.rdPost + 30 * PRICE.rdComment) + 0.003,
+      platform, label, actor: ACTORS.reddit, estimate: items * (PRICE.rdPost + redditComments * PRICE.rdComment) + 0.003,
       input: {
         urls: [`https://www.reddit.com/search/?q=${encodeURIComponent(query.trim())}&sort=top&t=${spanLimit(span, 'day', 'week', 'month')}`],
         sort: 'top', timeFilter: spanLimit(span, 'day', 'week', 'month'), maxPostsPerSource: items,
-        includeComments: true, maxCommentsPerPost: 30, commentDepth: 1, deduplicatePosts: true, outputFormat: 'default',
+        includeComments: true, maxCommentsPerPost: redditComments, commentDepth: 1, deduplicatePosts: true, outputFormat: 'default',
       },
     });
     else log(`[${platform}/${label}] no search actor for ${platform}, skipped`);
@@ -475,18 +481,21 @@ export async function collectDaily({ runId, workspaceId = null, log = console.lo
     }
   }
 
-  // Keywords: search once per platform, shared by every workspace that tracks the word.
+  // Keywords: search once per platform, shared by every workspace that tracks the word. A search is the
+  // costly part of a run, so a word is searched at most once in KEYWORD_MIN_HOURS (default 20) however
+  // often refreshes run; a new word is searched straight away.
   if (!skipKeywords) {
+    const keywordMinHours = Math.max(minHours, envInt('KEYWORD_MIN_HOURS', 20));
     for (const kw of targets.keywords) {
       const { rows } = await pool.query('select platform::text as platform, last_collected_at from query_collections where query_key = $1', [kw.key]);
       const last = new Map(rows.map((r) => [r.platform, Date.parse(r.last_collected_at)]));
-      const platforms = kw.platforms.filter((p) => !(last.has(p) && now - last.get(p) < minHours * HOUR));
+      const platforms = kw.platforms.filter((p) => !(last.has(p) && now - last.get(p) < keywordMinHours * HOUR));
       if (!platforms.length) continue;
       const from = Math.min(...platforms.map((p) => (last.has(p) ? Math.max(last.get(p), now - 30 * DAY) : now - windowDays * DAY)));
       try {
-        const r = await searchCollect({ runId, workspaceId: null, query: kw.query, platforms, dateFrom: from, dateTo: now, log, commentBudget: Math.min(commentBudget, 300) });
+        // Search results get their own shallow comment pass, and stay out of the deep pass below.
+        const r = await searchCollect({ runId, workspaceId: null, query: kw.query, platforms, dateFrom: from, dateTo: now, log, commentBudget: Math.min(commentBudget, 300), purpose: 'keyword' });
         add(r);
-        posts.push(...r.posts);
         for (const p of r.searched) await markCollected(kw.key, p, r.capturedAt);
       } catch (err) {
         log(`keyword "${kw.query}" failed: ${err.message}`);
@@ -494,7 +503,7 @@ export async function collectDaily({ runId, workspaceId = null, log = console.lo
     }
   }
 
-  // The deep comment pass on the best posts of this run.
+  // The deep comment pass on the best posts of this run's creators and subreddits.
   const pass = await commentPass({ posts, plan: COMMENT_PLAN, budget: commentBudget, runId, workspaceId: null, log });
   totals.comments += pass.comments;
   totals.newComments += pass.newComments;
@@ -507,13 +516,13 @@ export async function collectDaily({ runId, workspaceId = null, log = console.lo
 }
 
 // Search-based collection with everything the daily pass needs to know about what it did.
-async function searchCollect({ runId, workspaceId = null, query, platforms, dateFrom, dateTo, log, commentBudget }) {
+async function searchCollect({ runId, workspaceId = null, query, platforms, dateFrom, dateTo, log, commentBudget, purpose = 'report' }) {
   const text = String(query ?? '').trim();
   if (!text) throw new Error('collectForQuery needs a query');
   const to = dateTo ? (typeof dateTo === 'number' ? dateTo : Date.parse(dateTo)) : Date.now();
   const from = dateFrom ? (typeof dateFrom === 'number' ? dateFrom : Date.parse(dateFrom)) : to - 7 * DAY;
   const toEnd = typeof dateTo === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateTo) ? to + DAY : to;
-  const jobs = searchJobs({ query: text, platforms: platforms ?? [], from, to: toEnd, log });
+  const jobs = searchJobs({ query: text, platforms: platforms ?? [], from, to: toEnd, log, purpose });
   const none = { posts: [], comments: [], saved: { newIds: [], ids: [], comments: { inserted: 0, newIds: [] } }, searched: [], capturedAt: new Date().toISOString(), captureIds: [], usd: 0 };
   if (!jobs.length) return none;
   for (const j of jobs) log(`  ${`${j.platform}/${j.label}`.padEnd(18)} ~$${j.estimate.toFixed(3)} cap $${j.cap}  ${j.actor}`);
@@ -531,7 +540,7 @@ async function searchCollect({ runId, workspaceId = null, query, platforms, date
       [posts.map((p) => p.post_id), text, workspaceId, r.capturedAt],
     );
   }
-  const pass = await commentPass({ posts, plan: SEARCH_PLAN, budget: commentBudget, runId, workspaceId, log });
+  const pass = await commentPass({ posts, plan: purpose === 'keyword' ? KEYWORD_PLAN : SEARCH_PLAN, budget: commentBudget, runId, workspaceId, log });
   return {
     posts,
     comments: r.comments,

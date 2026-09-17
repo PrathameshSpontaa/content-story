@@ -239,7 +239,8 @@ export async function lookupProfile(workspaceId, raw, platform = null) {
 
 // A creator we don't cover yet, with a profile on each platform they post on. Refuses profiles
 // that already belong to someone, so the same person is never collected twice.
-export async function createCreator(workspaceId, { name, profiles, follow = true }) {
+// `checked` says the channel finder already looked for their other channels.
+export async function createCreator(workspaceId, { name, profiles, follow = true, checked = false }) {
   const cleanName = cleanKeyword(name).slice(0, 80);
   if (cleanName.length < 2) throw new WatchlistError('Add the creator’s name.');
 
@@ -265,7 +266,7 @@ export async function createCreator(workspaceId, { name, profiles, follow = true
     );
     if (taken.rows[0]) return { existingId: taken.rows[0].creator_id };
     if (follow) await assertRoom(client, workspaceId, 'creator', plan);
-    const id = (await client.query('insert into creators (name) values ($1) returning id', [cleanName])).rows[0].id;
+    const id = (await client.query('insert into creators (name, channels_checked_at) values ($1, case when $2 then now() end) returning id', [cleanName, Boolean(checked)])).rows[0].id;
     for (const p of parsed) {
       await client.query('insert into creator_handles (creator_id, platform, handle, url) values ($1, $2, $3, $4)', [id, p.platform, p.handle, p.url]);
     }
@@ -278,6 +279,43 @@ export async function createCreator(workspaceId, { name, profiles, follow = true
     throw new ExistingCreatorError(`One of those profiles belongs to ${existing.name}, who’s already on Content-Story.`, existing);
   }
   return getCreatorSummary(workspaceId, result.id);
+}
+
+// More channels for a creator this workspace follows (the finder found them). Only platforms the
+// creator doesn't have yet, and profiles nobody else owns. Everyone following the creator gets the new
+// channels collected. Returns the updated summary and how many were added.
+export async function addCreatorChannels(workspaceId, creatorId, profiles) {
+  if (!UUID.test(String(creatorId))) throw new WatchlistError('Choose a creator.');
+  const parsed = [];
+  for (const p of Array.isArray(profiles) ? profiles.slice(0, 10) : []) {
+    if (!CREATOR_PLATFORMS.includes(p?.platform) || parsed.some((x) => x.platform === p.platform)) continue;
+    const h = parseHandle(p.platform, p.input);
+    if (h) parsed.push({ platform: p.platform, ...h });
+  }
+  const added = await tx(async (client) => {
+    const { rows: follows } = await client.query(`select 1 from tracking_targets where workspace_id = $1 and kind = 'creator' and creator_id = $2 and active`, [workspaceId, creatorId]);
+    if (!follows.length) throw new WatchlistError('Follow this creator first.');
+    const { rows: have } = await client.query('select platform::text from creator_handles where creator_id = $1 for update', [creatorId]);
+    const fresh = parsed.filter((p) => !have.some((h) => h.platform === p.platform));
+    const inserted = [];
+    for (const p of fresh) {
+      const { rowCount } = await client.query(
+        `insert into creator_handles (creator_id, platform, handle, url)
+         select $1, $2, $3, $4 where not exists (select 1 from creator_handles where platform = $2::platform and lower(handle) = lower($3))`,
+        [creatorId, p.platform, p.handle, p.url],
+      );
+      if (rowCount) inserted.push(p.platform);
+    }
+    if (inserted.length) {
+      await client.query(
+        `update tracking_targets set platforms = array(select distinct unnest(platforms || $2::platform[])) where kind = 'creator' and creator_id = $1`,
+        [creatorId, inserted],
+      );
+    }
+    await client.query('update creators set channels_checked_at = now() where id = $1', [creatorId]);
+    return inserted.length;
+  });
+  return { creator: await getCreatorSummary(workspaceId, creatorId), added };
 }
 
 // ─── Onboarding and lists ──────────────────────────────────────────────────

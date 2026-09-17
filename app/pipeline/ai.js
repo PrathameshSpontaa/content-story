@@ -39,6 +39,9 @@ export const PRICES = {
   'gemini-3.8-flash': [0.75, 3.75],
 };
 
+// One OpenAI web search call on a reasoning model; the search results' tokens are billed as input.
+const WEB_SEARCH_USD = 0.01;
+
 // Cheap: cards and comment groups. Strong: grouping, narrative, writing, lens and the AI editor.
 // Override with OPENAI_CHEAP_MODEL / OPENAI_STRONG_MODEL (or the GEMINI_ ones when AI_PROVIDER=gemini).
 const DEFAULT_MODELS = {
@@ -68,14 +71,24 @@ export function loadPrompt(name) {
   return prompts.get(name);
 }
 
-// Models sometimes wrap JSON in a code fence or add a BOM; accept both.
+// Models sometimes wrap JSON in a code fence, add a BOM, or (answering after a web search, without JSON
+// mode) put a sentence around it; accept all three.
 export function parseJsonLoose(raw, label = 'input') {
   let text = String(raw).replace(/^\uFEFF/, '').trim();
-  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/) ?? text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
   if (fence) text = fence[1];
   try {
     return JSON.parse(text);
   } catch (err) {
+    const start = text.search(/[{[]/);
+    const end = Math.max(text.lastIndexOf('}'), text.lastIndexOf(']'));
+    if (start > 0 || (start === 0 && end < text.length - 1)) {
+      try {
+        return JSON.parse(text.slice(start, end + 1));
+      } catch {
+        // Fall through to the original error.
+      }
+    }
     throw new Error(`Bad JSON in ${label}: ${err.message}`);
   }
 }
@@ -110,14 +123,17 @@ function httpsCall(url, { method = 'GET', headers = {}, body = null, timeoutMs =
 
 // ─── Providers: each returns { text, usage: { input, cached, output }, finish, incomplete } ──
 
-async function callGemini({ model, system, user, maxOutputTokens }) {
+// With webSearch the model grounds its answer in Google Search; JSON mime type can't be combined with
+// that, so the prompt asks for JSON instead.
+async function callGemini({ model, system, user, maxOutputTokens, webSearch = false }) {
   const res = await httpsCall(`${GEMINI_API}/models/${model}:generateContent`, {
     method: 'POST',
     headers: { 'x-goog-api-key': requireEnv('GEMINI_API_KEY'), 'Content-Type': 'application/json' },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: 'user', parts: [{ text: user }] }],
-      generationConfig: { responseMimeType: 'application/json', temperature: 0.2, maxOutputTokens },
+      ...(webSearch ? { tools: [{ google_search: {} }] } : {}),
+      generationConfig: { ...(webSearch ? {} : { responseMimeType: 'application/json' }), temperature: 0.2, maxOutputTokens },
     }),
   });
   if (!res.ok) {
@@ -151,8 +167,9 @@ async function callGemini({ model, system, user, maxOutputTokens }) {
 }
 
 // The Responses API in JSON mode (the answer must be one JSON object). store: false keeps posts and
-// comments out of OpenAI's 30-day response storage.
-async function callOpenAI({ model, system, user, maxOutputTokens }) {
+// comments out of OpenAI's 30-day response storage. With webSearch the model may search the web; JSON
+// mode is left off then, and the prompt asks for JSON instead.
+async function callOpenAI({ model, system, user, maxOutputTokens, webSearch = false, effort = null }) {
   const res = await httpsCall(`${openaiApi()}/responses`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${requireEnv('OPENAI_API_KEY')}`, 'Content-Type': 'application/json' },
@@ -160,8 +177,8 @@ async function callOpenAI({ model, system, user, maxOutputTokens }) {
       model,
       instructions: system,
       input: user,
-      text: { format: { type: 'json_object' } },
-      reasoning: { effort: openaiEffort(model) },
+      ...(webSearch ? { tools: [{ type: 'web_search' }] } : { text: { format: { type: 'json_object' } } }),
+      reasoning: { effort: effort ?? openaiEffort(model) },
       max_output_tokens: maxOutputTokens + OPENAI_REASONING_ROOM,
       store: false,
     }),
@@ -190,7 +207,12 @@ async function callOpenAI({ model, system, user, maxOutputTokens }) {
   const refusal = content.find((c) => c.type === 'refusal')?.refusal;
   return {
     text: content.filter((c) => c.type === 'output_text').map((c) => c.text ?? '').join(''),
-    usage: { input: usage.input_tokens ?? 0, cached: usage.input_tokens_details?.cached_tokens ?? 0, output: usage.output_tokens ?? 0 },
+    usage: {
+      input: usage.input_tokens ?? 0,
+      cached: usage.input_tokens_details?.cached_tokens ?? 0,
+      output: usage.output_tokens ?? 0,
+      searches: (data.output ?? []).filter((item) => item.type === 'web_search_call').length,
+    },
     finish: refusal ? `refusal: ${String(refusal).slice(0, 120)}` : `status ${data.status ?? 'none'}${data.incomplete_details?.reason ? ` (${data.incomplete_details.reason})` : ''}`,
     incomplete: data.status === 'incomplete',
   };
@@ -212,16 +234,17 @@ async function assertUnderDailyCap(provider) {
 
 const unpriced = new Set();
 async function recordCost({ provider, model, step, label, runId, workspaceId, usage = {}, fake = false }) {
-  const { input = 0, cached = 0, output = 0 } = usage;
+  const { input = 0, cached = 0, output = 0, searches = 0 } = usage;
   const price = PRICES[model];
   if (!fake && !price && !unpriced.has(model)) {
     unpriced.add(model);
     console.log(`  [ai] no price for ${model} in pipeline/ai.js PRICES; its calls are recorded at $0 and don't count toward the daily cap`);
   }
-  const usd = fake || !price ? 0 : ((input - cached) * price[0] + cached * (price[2] ?? price[0]) + output * price[1]) / 1e6;
+  const tokens = fake || !price ? 0 : ((input - cached) * price[0] + cached * (price[2] ?? price[0]) + output * price[1]) / 1e6;
+  const usd = tokens + (fake ? 0 : searches * WEB_SEARCH_USD);
   await pool.query(
     `insert into cost_events (provider, detail, run_id, workspace_id, usd, units) values ($1, $2, $3, $4, $5, $6::jsonb)`,
-    [provider, model, runId, workspaceId, usd, JSON.stringify({ input_tokens: input, ...(cached ? { cached_input_tokens: cached } : {}), output_tokens: output, step, label, ...(fake ? { fake: true } : {}) })],
+    [provider, model, runId, workspaceId, usd, JSON.stringify({ input_tokens: input, ...(cached ? { cached_input_tokens: cached } : {}), output_tokens: output, ...(searches ? { web_searches: searches } : {}), step, label, ...(fake ? { fake: true } : {}) })],
   );
   return usd;
 }
@@ -282,8 +305,10 @@ function fakeAnswer({ step, label, user }) {
 
 // Sends one prompt and returns the parsed JSON. Rate limits, server errors, dropped connections, empty
 // replies and broken JSON are retried with backoff (a timed-out or cut-off call once, since each one
-// is long); every call, paid or fake, leaves a cost_events row.
-export async function generateJson({ model, system, user, step, label, runId = null, workspaceId = null, maxOutputTokens = 32768 }) {
+// is long); every call, paid or fake, leaves a cost_events row. webSearch lets the model search the web
+// (the channel finder); effort overrides the reasoning effort; maxAttempts caps retries for callers a
+// person is waiting on.
+export async function generateJson({ model, system, user, step, label, runId = null, workspaceId = null, maxOutputTokens = 32768, webSearch = false, effort = null, maxAttempts = 6 }) {
   const provider = aiProvider();
   if (isFake()) {
     const out = fakeAnswer({ step, label, user });
@@ -294,7 +319,7 @@ export async function generateJson({ model, system, user, step, label, runId = n
   for (let attempt = 1; ; attempt += 1) {
     try {
       await assertUnderDailyCap(provider);
-      const reply = await call({ model, system, user, maxOutputTokens });
+      const reply = await call({ model, system, user, maxOutputTokens, webSearch, effort });
       await recordCost({ provider, model, step, label, runId, workspaceId, usage: reply.usage });
       if (reply.incomplete) {
         const err = new Error(`reply cut off (${reply.finish})`);
@@ -312,7 +337,7 @@ export async function generateJson({ model, system, user, step, label, runId = n
       const retryable =
         !err.dailyQuota &&
         (err.status === 429 || (typeof err.status === 'number' && err.status >= 500) || err.status === 'empty' || (err.status === 'incomplete' && attempt < 2) || network || /Bad JSON/.test(err.message));
-      if (!retryable || attempt >= 6) throw err;
+      if (!retryable || attempt >= maxAttempts) throw err;
       const waitMs = Math.min(120_000, Math.max(err.retryDelayMs ?? 0, 2 ** attempt * 2000));
       console.log(`  [${step}/${label}] ${err.message.replace(/\s+/g, ' ').slice(0, 160)}, retry ${attempt} in ${waitMs / 1000}s`);
       await new Promise((r) => setTimeout(r, waitMs));
