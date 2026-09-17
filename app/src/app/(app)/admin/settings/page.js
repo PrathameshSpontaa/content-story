@@ -1,7 +1,7 @@
 // Operator settings: when collection runs and what it costs, whether the AI publishes and merges
 // stories on its own, and the limits on users' on-demand refreshes.
 import Link from 'next/link';
-import { spendToday } from '../../../../../lib/admin.js';
+import { PROVIDER_LABEL, spendToday } from '../../../../../lib/admin.js';
 import { fmtTime } from '../../../../../lib/format.js';
 import { scheduleSummary } from '../../../../../lib/refresh.js';
 import { SETTINGS, getSettings } from '../../../../../lib/settings.js';
@@ -62,7 +62,7 @@ export default async function AdminSettingsPage() {
           <section className="panel" aria-labelledby="timing-h">
             <h2 id="timing-h">Collection timing</h2>
             <p className="muted-note">
-              Shorter intervals collect more often and raise Apify and Gemini spend. Customers are still charged tracking credits once a day.
+              Shorter intervals collect more often and raise Apify and AI spend. Customers are still charged tracking credits once a day.
             </p>
             <ActionForm action={saveTimingAction} submitLabel="Save timing" resetOnSuccess={false} className="topgap">
               <div className="field-row">
@@ -137,10 +137,10 @@ export default async function AdminSettingsPage() {
                   {today.map((t, i) => (
                     <span key={t.provider}>
                       {i ? ' · ' : ''}
-                      {t.provider === 'apify' ? 'Apify' : 'Gemini'} {usd(t.usd)} of {usd(t.cap)} today
+                      {PROVIDER_LABEL[t.provider]} {usd(t.usd)} of {usd(t.cap)} today
                     </span>
                   ))}
-                  <span className="sub">Set by APIFY_DAILY_CAP_USD and GEMINI_DAILY_CAP_USD.</span>
+                  <span className="sub">Set by {today.map((t) => `${t.provider.toUpperCase()}_DAILY_CAP_USD`).join(' and ')}.</span>
                 </dd>
               </div>
             </dl>

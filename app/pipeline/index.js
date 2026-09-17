@@ -1,6 +1,7 @@
 // The production pipeline's entry points, called by the job layer (pipeline/jobs.js): the scheduled
 // run for the shared feed, one workspace's on-demand refresh into the shared feed, and one report.
 import { pool } from '../lib/db.js';
+import { aiProvider } from '../lib/env.js';
 import { collectMinHours, getSettings } from '../lib/settings.js';
 import { isFake } from './fixtures.js';
 import { buildStories } from './storybuild.js';
@@ -61,7 +62,7 @@ export async function runRefresh({ runId, workspaceId, log = console.log, feedId
   if (!isFake()) {
     const { assertUnderDailyCap } = await import('../lib/spend.js');
     await assertUnderDailyCap('apify');
-    await assertUnderDailyCap('gemini');
+    await assertUnderDailyCap(aiProvider());
   }
   const { collectDaily } = await load('collect');
   const collected = await collectDaily({ runId, workspaceId, log, minHours: settings.on_demand_cooldown_minutes / 60 });

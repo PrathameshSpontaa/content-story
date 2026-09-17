@@ -59,12 +59,12 @@ filled in. These are the ones you type:
 | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | [Razorpay dashboard](https://dashboard.razorpay.com) > **Account & Settings** > **API Keys**. Staging gets **Test mode** keys (`rzp_test_...`). Production gets **Live mode** keys, which exist only after KYC and the GSTIN (N1, N2). Turn on **Subscriptions** for the account. |
 | `RAZORPAY_WEBHOOK_SECRET` | Razorpay > **Account & Settings** > **Webhooks** > add `<APP_URL>/api/webhooks/razorpay` for `subscription.*`, `order.paid` and `payment.failed`. The secret you type there is this value. It is not the API key secret. Make one webhook per mode: test for staging, live for production. |
 | `APIFY_TOKEN` | [Apify console](https://console.apify.com) > **Settings** > **API & Integrations** > create a new personal API token. The dry-run token appeared in a log, so make fresh ones. A separate token per environment makes rotation easier. |
-| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com) > **Get API key**. Create it in a Google Cloud project with **billing enabled** (N4). The free tier has low daily limits, and Google may use free-tier data, so it can't be used for customer data. |
+| `OPENAI_API_KEY` | [OpenAI platform](https://platform.openai.com) > **API keys** > create a secret key in a project that has credits (**Settings** > **Billing**). Set a monthly budget under **Settings** > **Limits**. To use Gemini instead, set `AI_PROVIDER=gemini` and `GEMINI_API_KEY` from [Google AI Studio](https://aistudio.google.com), in a Google Cloud project with **billing enabled** (N4): Google may use free-tier data, so the free tier can't be used for customer data. |
 | `RESEND_API_KEY`, `EMAIL_FROM` | [Resend](https://resend.com) > **Domains** > add your domain. Create the DNS records Resend shows (SPF TXT, DKIM, and the bounce MX) at your DNS provider and wait for **Verified**. Then **API Keys** > create a *sending access* key. `EMAIL_FROM` is an address on the verified domain, e.g. `Content-Story <stories@yourdomain.in>`. Until the key is set, emails are recorded and logged as `[email:fake]` but not sent. |
 | `SUPPORT_EMAIL`, `SUPPORT_PHONE`, `BUSINESS_ADDRESS` | What `/contact` shows. Razorpay's live-mode review expects a reachable contact and a registered address on the site. |
 
 The other keys have defaults in `render.yaml`: `APP_URL`, `PAYMENT_PROVIDER`, `PIPELINE_PROVIDER`,
-the two daily caps, the Gemini models, `COMMENTS_PER_RUN`,
+the two daily caps, `AI_PROVIDER` and the OpenAI models, `COMMENTS_PER_RUN`,
 `STORY_DORMANT_DAYS`, `DATABASE_SSL`, `CREDIT_INR`, `USD_INR` and
 `TOPUP_PAISE_PER_CREDIT`. `USD_INR` is the rupees-per-dollar rate that both the admin pages and
 `npm run margin` use. `DATABASE_URL` isn't in the groups; each
@@ -132,7 +132,7 @@ writes costs to `cost_events`, and shows up on **/admin/runs**. Re-running a dat
 twice, and collection skips any source collected within the current collection interval (set at
 **/admin/settings**).
 
-To try a run with almost no spend, set `APIFY_DAILY_CAP_USD` and `GEMINI_DAILY_CAP_USD` low in
+To try a run with almost no spend, set `APIFY_DAILY_CAP_USD` and `OPENAI_DAILY_CAP_USD` low in
 the staging group, redeploy the worker, and run it. Collection stops at the cap and you get the
 ops email, which also tests alerting.
 
@@ -167,7 +167,7 @@ The hand-made `content-story` web service is the only service on Render today, a
 workers have no free plan. So in production the web service starts the worker itself, as a child
 process (`node scripts/worker.js`, see `app/src/instrumentation.js`). It inherits the web
 service's environment, so the web service needs the worker's keys too: `APIFY_TOKEN`,
-`GEMINI_API_KEY`, `PIPELINE_PROVIDER=real` and the caps. `npm run check:env -- worker` in the web
+`OPENAI_API_KEY`, `PIPELINE_PROVIDER=real` and the caps. `npm run check:env -- worker` in the web
 service's Shell says what is missing. Without these, every collection fails and the Following page
 shows the error next to the uncollected sources.
 

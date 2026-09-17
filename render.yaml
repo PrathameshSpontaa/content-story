@@ -168,7 +168,7 @@ services:
     name: content-story-worker
     runtime: node
     region: singapore
-    plan: 0.5c-512mb                  # Apify and Gemini do the heavy lifting; raise if it swaps
+    plan: 0.5c-512mb                  # Apify and OpenAI do the heavy lifting; raise if it swaps
     buildCommand: cd app && npm ci
     startCommand: cd app && npm run worker
     autoDeployTrigger: off
@@ -316,15 +316,17 @@ envVarGroups:
         value: real
       - key: APIFY_TOKEN
         sync: false
-      - key: GEMINI_API_KEY                # from a PAID Google AI Studio project (N4)
+      - key: AI_PROVIDER                   # openai | gemini (then set GEMINI_API_KEY and GEMINI_DAILY_CAP_USD)
+        value: openai
+      - key: OPENAI_API_KEY                # from an OpenAI project with credits
         sync: false
-      - key: GEMINI_CHEAP_MODEL            # cards and comment groups
-        value: gemini-3.5-flash-lite
-      - key: GEMINI_STRONG_MODEL           # grouping, narrative, writing
-        value: gemini-3.8-flash
+      - key: OPENAI_CHEAP_MODEL            # cards and comment groups
+        value: gpt-5.6-luna
+      - key: OPENAI_STRONG_MODEL           # grouping, narrative, writing, AI editor
+        value: gpt-5.4-mini
       - key: APIFY_DAILY_CAP_USD           # global safety cap per IST day, independent of customer credits
         value: "3"
-      - key: GEMINI_DAILY_CAP_USD
+      - key: OPENAI_DAILY_CAP_USD
         value: "2"
       - key: COMMENTS_PER_RUN              # comment budget for one collection run
         value: "1500"
@@ -373,15 +375,17 @@ envVarGroups:
         value: real
       - key: APIFY_TOKEN
         sync: false
-      - key: GEMINI_API_KEY
+      - key: AI_PROVIDER
+        value: openai
+      - key: OPENAI_API_KEY
         sync: false
-      - key: GEMINI_CHEAP_MODEL
-        value: gemini-3.5-flash-lite
-      - key: GEMINI_STRONG_MODEL
-        value: gemini-3.8-flash
+      - key: OPENAI_CHEAP_MODEL
+        value: gpt-5.6-luna
+      - key: OPENAI_STRONG_MODEL
+        value: gpt-5.4-mini
       - key: APIFY_DAILY_CAP_USD           # raise with the customer count; collection stops at the cap
         value: "10"
-      - key: GEMINI_DAILY_CAP_USD
+      - key: OPENAI_DAILY_CAP_USD
         value: "5"
       - key: COMMENTS_PER_RUN
         value: "1500"

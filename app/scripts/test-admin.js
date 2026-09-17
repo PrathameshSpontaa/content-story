@@ -25,6 +25,7 @@ import {
   spendToday,
 } from '../lib/admin.js';
 import { pool } from '../lib/db.js';
+import { aiProvider } from '../lib/env.js';
 import { getSettings } from '../lib/settings.js';
 import { getFeed, getStory } from '../lib/stories.js';
 
@@ -377,18 +378,18 @@ try {
   await check('runs, spend, margin and notification helpers return rows', async () => {
     const [run] = await q(`insert into runs (kind, status, finished_at, summary) values ('daily', 'failed', now(), '{"stories": 2}') returning id`);
     made.runs.push(run.id);
-    await q(`insert into cost_events (provider, detail, run_id, usd) values ('apify', 'admin-test', $1, 0.25), ('gemini', 'admin-test', $1, 0.05)`, [run.id]);
+    await q(`insert into cost_events (provider, detail, run_id, usd) values ('apify', 'admin-test', $1, 0.25), ('openai', 'admin-test', $1, 0.05)`, [run.id]);
     const runs = await listRuns(50);
     const mine = runs.find((r) => r.id === run.id);
     assert.ok(mine, 'the test run is listed');
     assert.equal(Math.round(mine.usd * 100), 30);
     assert.equal(mine.summary.stories, 2);
     const days = await costByDay(14);
-    assert.ok(days.length >= 1 && days[0].apify >= 0.25 && days[0].gemini >= 0.05);
+    assert.ok(days.length >= 1 && days[0].apify >= 0.25 && days[0].ai >= 0.05);
     const today = await spendToday();
     assert.deepEqual(
       today.map((t) => t.provider),
-      ['apify', 'gemini'],
+      ['apify', aiProvider()],
     );
     assert.ok(today[0].usd >= 0.25 && today[0].cap > 0);
     const margin = await marginByAction(30);

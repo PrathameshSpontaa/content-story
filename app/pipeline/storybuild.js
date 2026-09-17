@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { pool, tx } from '../lib/db.js';
 import { getSettings } from '../lib/settings.js';
 import { judgeSameStory, reviewStory } from './editor.js';
-import { MODELS, RETRY_MARKER, generateJson, loadPrompt } from './gemini.js';
+import { MODELS, RETRY_MARKER, generateJson, loadPrompt } from './ai.js';
 import { commentWeight, computeStats, entityRanking, heatScore, round1, storyCounts } from './stats.js';
 import { lengthProblems, mainCharacterProblem, sameName, verifyStory } from './verify.js';
 

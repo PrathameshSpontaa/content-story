@@ -1,10 +1,11 @@
-// Global daily safety caps on what we spend at Apify and Gemini, independent of customer credits.
+// Global daily safety caps on what we spend at Apify and the AI provider, independent of customer credits.
 // A collector calls assertUnderDailyCap before each paid call; when the cap is reached it stops,
 // and the admin is told once per provider per day through the notifications table.
 import { pool } from './db.js';
 
 const CAPS = {
   apify: { env: 'APIFY_DAILY_CAP_USD', fallback: 10 },
+  openai: { env: 'OPENAI_DAILY_CAP_USD', fallback: 5 },
   gemini: { env: 'GEMINI_DAILY_CAP_USD', fallback: 5 },
 };
 
@@ -28,7 +29,7 @@ export const adminEmails = () =>
 
 export function dailyCap(provider) {
   const cap = CAPS[provider];
-  if (!cap) throw new Error(`Unknown provider "${provider}"; expected apify or gemini`);
+  if (!cap) throw new Error(`Unknown provider "${provider}"; expected apify, openai or gemini`);
   const value = Number(process.env[cap.env]);
   return Number.isFinite(value) && value >= 0 ? value : cap.fallback;
 }

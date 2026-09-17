@@ -2,8 +2,9 @@
 // come from the admin settings and are re-checked every minute; one instance is enough.
 // Usage: node scripts/worker.js
 import { pool } from '../lib/db.js';
-import { requireEnv } from '../lib/env.js';
+import { aiProvider, requireEnv } from '../lib/env.js';
 import { getSettings } from '../lib/settings.js';
+import { MODELS } from '../pipeline/ai.js';
 import { makeLog, registerSchedules, registerWorkers, startBoss, watchSchedules } from '../pipeline/jobs.js';
 
 requireEnv('DATABASE_URL');
@@ -13,7 +14,7 @@ const boss = await startBoss({ log: makeLog('boss') });
 const queues = await registerWorkers(boss, { log });
 const schedules = await registerSchedules(boss, { log, settings: await getSettings() });
 const watcher = watchSchedules(boss, { current: schedules, log });
-log(`ready: working ${queues.join(', ')}; caps apify $${process.env.APIFY_DAILY_CAP_USD || 10}/day, gemini $${process.env.GEMINI_DAILY_CAP_USD || 5}/day; admin ${process.env.ADMIN_EMAILS || '(ADMIN_EMAILS not set: no ops emails)'}`);
+log(`ready: working ${queues.join(', ')}; caps apify $${process.env.APIFY_DAILY_CAP_USD || 10}/day, ${aiProvider()} (${MODELS.cheap()}, ${MODELS.strong()}) $${process.env[`${aiProvider().toUpperCase()}_DAILY_CAP_USD`] || 5}/day; admin ${process.env.ADMIN_EMAILS || '(ADMIN_EMAILS not set: no ops emails)'}`);
 
 let stopping = false;
 async function shutdown(signal) {

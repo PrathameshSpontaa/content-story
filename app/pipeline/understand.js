@@ -20,36 +20,38 @@ const truncate = (value, max) => {
 const normalizeText = (s) => String(s ?? '').normalize('NFKC').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, ' ').trim().toLowerCase();
 
 const userMessage = (input) =>
-  `The input is a JSON array of ${input.length} items. Apply the instructions to each item and return a JSON array with exactly ${input.length} output objects, in the same order.\n\nInput:\n${JSON.stringify(input)}`;
+  `The input is a JSON array of ${input.length} items. Apply the instructions to each item and return one JSON object, {"items": [...]}, whose items array has exactly ${input.length} output objects in the same order.\n\nInput:\n${JSON.stringify(input)}`;
 
-// The Gemini client is another module; until it exists the prompts are read from disk and fake
+// The AI client is another module; until it exists the prompts are read from disk and fake
 // mode reads the dry run's checked outputs directly.
-async function loadGemini() {
+async function loadAi() {
   try {
-    return await import('./gemini.js');
+    return await import('./ai.js');
   } catch (err) {
     if (err.code === 'ERR_MODULE_NOT_FOUND') return null;
     throw err;
   }
 }
-const readPrompt = (gemini, name) => (gemini?.loadPrompt ? gemini.loadPrompt(name) : readFileSync(join(PROMPTS, `${name}.md`), 'utf8'));
-const modelName = (gemini) => gemini?.MODELS?.cheap?.() ?? process.env.GEMINI_CHEAP_MODEL ?? 'gemini-3.5-flash-lite';
+const readPrompt = (ai, name) => (ai?.loadPrompt ? ai.loadPrompt(name) : readFileSync(join(PROMPTS, `${name}.md`), 'utf8'));
+const modelName = (ai) => ai?.MODELS?.cheap?.() ?? 'fixture:dryrun';
 
 // One batch in, one array out in the same order. In fake mode every item is answered from the
-// dry-run fixture for that post (through gemini.js when it is there, else straight from disk).
-async function askModel({ gemini, step, system, batch, runId, label }) {
+// dry-run fixture for that post (through ai.js when it is there, else straight from disk).
+async function askModel({ ai, step, system, batch, runId, label }) {
   const postIdOf = (item) => (step === 'cards' ? item.post_id : item.post.post_id);
-  if (!gemini?.generateJson) {
-    if (!isFake()) throw new Error('pipeline/gemini.js is missing; set PIPELINE_PROVIDER=fake or add the Gemini client');
+  if (!ai?.generateJson) {
+    if (!isFake()) throw new Error('pipeline/ai.js is missing; set PIPELINE_PROVIDER=fake or add the AI client');
     return batch.map((item) => ({ output: readFixtureOutput(step, postIdOf(item)), model: 'fixture:dryrun' }));
   }
-  const result = await gemini.generateJson({ model: modelName(gemini), system, user: userMessage(batch), step, label, runId, workspaceId: null, maxOutputTokens: 32768 });
-  const list = Array.isArray(result) ? result : [result];
+  const result = await ai.generateJson({ model: modelName(ai), system, user: userMessage(batch), step, label, runId, workspaceId: null, maxOutputTokens: 32768 });
+  // The answer is {"items": [...]} (OpenAI's JSON mode can't return a bare array); fake mode answers
+  // with the array itself.
+  const list = Array.isArray(result) ? result : Array.isArray(result?.items) ? result.items : [result];
   // Outputs follow input order, so a mistyped post_id is recovered from its position.
   return batch.map((item, i) => {
     const output = list[i] ?? null;
     if (output && output.post_id !== postIdOf(item) && !batch.some((b) => postIdOf(b) === output.post_id)) output.post_id = postIdOf(item);
-    return { output, model: modelName(gemini) };
+    return { output, model: modelName(ai) };
   });
 }
 
@@ -168,7 +170,7 @@ async function writeGroups(client, result, model) {
 // Cards for posts without one and groups for commented posts without any (all posts, or the given
 // ids). `force` redoes the given posts even when they already have output. Returns written counts.
 export async function understandNewPosts({ runId = null, postIds = null, force = false, log = console.log } = {}) {
-  const gemini = await loadGemini();
+  const ai = await loadAi();
   const counts = { cards: 0, groups: 0, cardsRejected: 0, groupsRejected: 0 };
   const aliasCache = new Map((await pool.query('select alias, entity_id from entity_aliases')).rows.map((r) => [r.alias, r.entity_id]));
 
@@ -187,7 +189,7 @@ export async function understandNewPosts({ runId = null, postIds = null, force =
   );
   if (cardPosts.length) {
     log(`cards: reading ${cardPosts.length} posts in batches of ${BATCH.cards}`);
-    const system = readPrompt(gemini, '01_story_card');
+    const system = readPrompt(ai, '01_story_card');
     const batches = await inBatches(cardPosts, BATCH.cards, async (batch, n) => {
       const input = batch.map((p) => ({
         post_id: p.post_id, platform: p.platform, creator: p.creator, handle: p.handle, published_at: p.published_at, kind: p.kind,
@@ -195,7 +197,7 @@ export async function understandNewPosts({ runId = null, postIds = null, force =
       }));
       let answers;
       try {
-        answers = await askModel({ gemini, step: 'cards', system, batch: input, runId, label: `cards-${n}`, log });
+        answers = await askModel({ ai, step: 'cards', system, batch: input, runId, label: `cards-${n}`, log });
       } catch (err) {
         log(`[cards] batch ${n} failed: ${err.message.slice(0, 200)}`);
         counts.cardsRejected += batch.length;
@@ -232,7 +234,7 @@ export async function understandNewPosts({ runId = null, postIds = null, force =
   );
   if (groupPosts.length) {
     log(`groups: sorting comments on ${groupPosts.length} posts in batches of ${BATCH.groups}`);
-    const system = readPrompt(gemini, '02_comment_groups');
+    const system = readPrompt(ai, '02_comment_groups');
     const { rows: allComments } = await pool.query(
       'select id, post_id, parent_id, author, is_creator, likes, text from comments where post_id = any($1::text[]) order by likes desc',
       [groupPosts.map((p) => p.post_id)],
@@ -248,7 +250,7 @@ export async function understandNewPosts({ runId = null, postIds = null, force =
       }));
       let answers;
       try {
-        answers = await askModel({ gemini, step: 'groups', system, batch: input, runId, label: `groups-${n}`, log });
+        answers = await askModel({ ai, step: 'groups', system, batch: input, runId, label: `groups-${n}`, log });
       } catch (err) {
         log(`[groups] batch ${n} failed: ${err.message.slice(0, 200)}`);
         counts.groupsRejected += batch.length;

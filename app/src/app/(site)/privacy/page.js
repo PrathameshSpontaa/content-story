@@ -35,7 +35,7 @@ export default function PrivacyPage() {
 
       <h2>Who processes data for us</h2>
       <p>
-        Clerk (sign-in), Render (hosting and database, Singapore region), Razorpay (payments), Google Gemini (AI processing of public posts and comments) and Apify
+        Clerk (sign-in), Render (hosting and database, Singapore region), Razorpay (payments), OpenAI (AI processing of public posts and comments) and Apify
         (collection of public posts). Each processes data only to provide its part of the service.
       </p>
 

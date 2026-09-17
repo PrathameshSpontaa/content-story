@@ -2,6 +2,7 @@
 // publish and merge decisions, with overrides), operator settings and the operations dashboard (runs,
 // spend, margin, failed emails). Pages call these only after requireAdmin().
 import { pool, tx } from './db.js';
+import { aiProvider } from './env.js';
 import { saveSettings } from './settings.js';
 
 const UUID = /^[0-9a-f-]{36}$/i;
@@ -10,8 +11,10 @@ const isUuid = (v) => UUID.test(String(v ?? ''));
 // Daily spend caps and the credit rule of thumb come from the environment; defaults match LAUNCH_PLAN.md.
 export const caps = () => ({
   apify: Number(process.env.APIFY_DAILY_CAP_USD) || 10,
+  openai: Number(process.env.OPENAI_DAILY_CAP_USD) || 5,
   gemini: Number(process.env.GEMINI_DAILY_CAP_USD) || 5,
 });
+export const PROVIDER_LABEL = { apify: 'Apify', openai: 'OpenAI', gemini: 'Gemini' };
 export const creditInr = () => Number(process.env.CREDIT_INR) || 1;
 export const usdInr = () => Number(process.env.USD_INR) || 84;
 
@@ -327,7 +330,7 @@ export async function listRuns(limit = 50) {
   return rows;
 }
 
-// Spend per India-time day for the last N days, one row per day with a column per provider.
+// Spend per India-time day for the last N days, one row per day: Apify, AI (OpenAI and Gemini) and other.
 export async function costByDay(days = 14) {
   const { rows } = await pool.query(
     `select ${IST_DAY}::text as day, provider, sum(usd)::float as usd, count(*)::int as events
@@ -338,8 +341,8 @@ export async function costByDay(days = 14) {
   );
   const byDay = new Map();
   for (const r of rows) {
-    const row = byDay.get(r.day) ?? { day: r.day, apify: 0, gemini: 0, other: 0, total: 0, events: 0 };
-    row[['apify', 'gemini'].includes(r.provider) ? r.provider : 'other'] += r.usd;
+    const row = byDay.get(r.day) ?? { day: r.day, apify: 0, ai: 0, other: 0, total: 0, events: 0 };
+    row[r.provider === 'apify' ? 'apify' : ['openai', 'gemini'].includes(r.provider) ? 'ai' : 'other'] += r.usd;
     row.total += r.usd;
     row.events += r.events;
     byDay.set(r.day, row);
@@ -347,7 +350,7 @@ export async function costByDay(days = 14) {
   return [...byDay.values()];
 }
 
-// Today's spend (India time) against each provider's daily cap.
+// Today's spend (India time) against the daily caps of Apify and the AI provider in use.
 export async function spendToday() {
   const { rows } = await pool.query(
     `select provider, sum(usd)::float as usd from cost_events
@@ -355,7 +358,7 @@ export async function spendToday() {
   );
   const limit = caps();
   const spent = Object.fromEntries(rows.map((r) => [r.provider, r.usd]));
-  return ['apify', 'gemini'].map((provider) => ({ provider, usd: spent[provider] ?? 0, cap: limit[provider], pct: Math.round(((spent[provider] ?? 0) / limit[provider]) * 100) }));
+  return ['apify', aiProvider()].map((provider) => ({ provider, usd: spent[provider] ?? 0, cap: limit[provider], pct: Math.round(((spent[provider] ?? 0) / limit[provider]) * 100) }));
 }
 
 // Credit actions and run kinds land in the same buckets so revenue and cost line up.

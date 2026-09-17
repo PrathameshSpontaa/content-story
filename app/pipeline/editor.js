@@ -3,7 +3,8 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { pool } from '../lib/db.js';
-import { MODELS, generateJson, isFake, loadPrompt } from './gemini.js';
+import { aiProvider } from '../lib/env.js';
+import { MODELS, generateJson, isFake, loadPrompt } from './ai.js';
 import { stripCites } from './verify.js';
 
 export const EDITOR_DECISIONS = ['publish', 'hold', 'reject'];
@@ -16,14 +17,14 @@ const oneLine = (value, max = 300) => String(value ?? '').replace(/\s+/g, ' ').t
 const iso = (value) => (value == null ? null : new Date(value).toISOString());
 
 // Sends one judging prompt to the strong model. In fake mode an overlay fixture answers when the test
-// wrote one (<overlay>/<step>/<label>.json); otherwise `fakeAnswer` does, with a $0 cost row like gemini.js.
+// wrote one (<overlay>/<step>/<label>.json); otherwise `fakeAnswer` does, with a $0 cost row like ai.js.
 async function judge({ step, prompt, input, label, runId, workspaceId, fakeAnswer }) {
   const model = MODELS.strong();
   const overlay = process.env.PIPELINE_FIXTURE_OVERLAY;
   if (isFake() && !(overlay && existsSync(join(overlay, step, `${label}.json`)))) {
     await pool.query(
-      `insert into cost_events (provider, detail, run_id, workspace_id, usd, units) values ('gemini', $1, $2, $3, 0, $4::jsonb)`,
-      [model, runId, workspaceId, JSON.stringify({ input_tokens: 0, output_tokens: 0, step, label, fake: true })],
+      `insert into cost_events (provider, detail, run_id, workspace_id, usd, units) values ($1, $2, $3, $4, 0, $5::jsonb)`,
+      [aiProvider(), model, runId, workspaceId, JSON.stringify({ input_tokens: 0, output_tokens: 0, step, label, fake: true })],
     );
     return { out: fakeAnswer(), model };
   }

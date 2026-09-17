@@ -18,14 +18,15 @@ The worker (`npm run worker`) keeps this timetable. The cron jobs are a suspende
 
 ## Money: the daily caps
 
-Customers pay in credits by the price list. Our real costs are Apify and Gemini, recorded per
+Customers pay in credits by the price list. Our real costs are Apify and the AI provider (OpenAI, or Gemini with `AI_PROVIDER=gemini`), recorded per
 call in `cost_events`. Two global caps (`app/lib/spend.js`) protect against a runaway day,
 whatever customers' credits say:
 
 - `APIFY_DAILY_CAP_USD` (code default 10): before every Apify actor run, the pipeline sums
   today's Apify `cost_events` since midnight IST. Once the sum reaches the cap, the run is
   refused. Each actor run also has its own hard charge limit on Apify's side.
-- `GEMINI_DAILY_CAP_USD` (code default 5): the same check before every Gemini call.
+- `OPENAI_DAILY_CAP_USD` (code default 5): the same check before every OpenAI call
+  (`GEMINI_DAILY_CAP_USD` when the provider is Gemini).
 
 When a cap is hit, the job throws `SpendCapReached`. The run ends `failed`, with the cap message
 in `runs.error`. One ops notification is written per provider per day, with the note
@@ -33,15 +34,14 @@ in `runs.error`. One ops notification is written per provider per day, with the 
 The next day starts fresh. Customers aren't charged twice when the day is re-run, and sources
 skipped today are collected on the next run. What to do is in the runbook (procedure 8).
 
-`render.yaml` sets $3 Apify / $2 Gemini on staging and $10 / $5 on production. The dry run
+`render.yaml` sets $3 Apify / $2 OpenAI on staging and $10 / $5 on production. The dry run
 measured roughly $0.05-0.08 of Apify plus Gemini per tracked creator per day, so those numbers
 leave plenty of headroom for the internal phase. Raise them as customers arrive.
 `npm run margin -- --days 14` shows credits charged against real cost per action, plus provider
 cost per day.
 
 Also cap at the source, in case the worker itself misbehaves: Apify console > **Settings** >
-**Usage limits** (monthly), and Google Cloud > **Billing** > **Budgets & alerts** on the Gemini
-project.
+**Usage limits** (monthly), and OpenAI > **Settings** > **Limits** (a monthly budget on the project).
 
 ## Referrals
 
@@ -152,7 +152,7 @@ text, not the drafts, and `/contact` shows `SUPPORT_EMAIL`, `SUPPORT_PHONE` and
 **Alerts tested by forcing failures.** On staging:
 1. Set `APIFY_DAILY_CAP_USD` to `0`, redeploy the worker, run `npm run daily`. Expect a failed
    run on /admin/runs and a `spend_cap:apify:...` ops email within the hour.
-2. Set `GEMINI_API_KEY` to a wrong value and run again. Expect a failed run and an ops email.
+2. Set `OPENAI_API_KEY` to a wrong value and run again. Expect a failed run and an ops email.
 3. Set `RESEND_API_KEY` to a wrong value and wait for the next housekeeping run. Expect
    `notifications.error` set, and the email listed under "Emails not sent" on /admin/runs.
 4. Suspend the worker for a day. Expect Render's service alert, and no `daily` run on

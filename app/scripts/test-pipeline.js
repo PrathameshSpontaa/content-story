@@ -18,7 +18,7 @@ process.env.PIPELINE_SKIP_COLLECT = '1';
 process.env.PIPELINE_FIXTURE_OVERLAY = overlay;
 
 const { pool } = await import('../lib/db.js');
-const { generateJson } = await import('../pipeline/gemini.js');
+const { generateJson } = await import('../pipeline/ai.js');
 const { computeStats, entityRanking, heatScore } = await import('../pipeline/stats.js');
 const { lengthProblems, verifyStory } = await import('../pipeline/verify.js');
 const { STATUSES, buildStories, findAliasMerges, loadWorld, nextStatus, splitCandidates } = await import('../pipeline/storybuild.js');
@@ -192,7 +192,7 @@ try {
     }
   });
 
-  await check('fake Gemini answers a batch from the dry-run fixtures by post_id and logs a $0 cost row', async () => {
+  await check('fake AI answers a batch from the dry-run fixtures by post_id and logs a $0 cost row', async () => {
     const items = [{ post_id: 'rd_1wcbid7' }, { post_id: 'yt_U-rsvXds9ck' }];
     const out = await generateJson({ model: 'gemini-3.5-flash-lite', system: '', user: `The input is a JSON array of 2 items. Apply the instructions.\n\nInput:\n${JSON.stringify(items)}`, step: 'cards', label: 'test-batch', runId });
     assert.deepEqual(out.map((c) => c.post_id), ['rd_1wcbid7', 'yt_U-rsvXds9ck']);

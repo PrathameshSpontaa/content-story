@@ -19,7 +19,9 @@ if (role !== 'all' && !ROLES.includes(role)) {
 }
 
 // required: which roles cannot start without the variable.
+// requiredIf: required only while a switch has a value (a list: while all of them do).
 // optional: which roles read it if present. def: the default the code uses when unset.
+const PIPELINE_REAL = { key: 'PIPELINE_PROVIDER', isNot: 'fake', unsetMeans: 'real', roles: ['worker'] };
 const VARS = [
   // database
   { key: 'DATABASE_URL', required: ['web', 'worker', 'cron'], note: 'Render: fromDatabase' },
@@ -46,11 +48,18 @@ const VARS = [
   // collection and AI (worker). PIPELINE_PROVIDER=fake needs none of the paid keys.
   { key: 'PIPELINE_PROVIDER', optional: ['worker'], def: 'real', note: 'fake | real; fake needs local dryrun/data' },
   { key: 'APIFY_TOKEN', requiredIf: { key: 'PIPELINE_PROVIDER', isNot: 'fake', unsetMeans: 'real', roles: ['worker'] }, note: 'Apify console > Settings > Integrations' },
-  { key: 'GEMINI_API_KEY', requiredIf: { key: 'PIPELINE_PROVIDER', isNot: 'fake', unsetMeans: 'real', roles: ['worker'] }, note: 'Google AI Studio, paid project' },
+  { key: 'APIFY_DAILY_CAP_USD', optional: ['worker'], def: '10', note: 'render.yaml: 3 staging, 10 production' },
+  { key: 'AI_PROVIDER', optional: ['worker'], def: 'openai', note: 'openai | gemini' },
+  { key: 'OPENAI_API_KEY', requiredIf: [PIPELINE_REAL, { key: 'AI_PROVIDER', is: 'openai', unsetMeans: 'openai', roles: ['worker'] }], note: 'platform.openai.com > API keys, in a project with credits' },
+  { key: 'OPENAI_CHEAP_MODEL', optional: ['worker'], def: 'gpt-5.6-luna', note: 'cards and comment groups' },
+  { key: 'OPENAI_STRONG_MODEL', optional: ['worker'], def: 'gpt-5.4-mini', note: 'grouping, narrative, writing, AI editor' },
+  { key: 'OPENAI_CHEAP_EFFORT', optional: ['worker'], def: 'low', note: 'reasoning effort: none | low | medium | high' },
+  { key: 'OPENAI_STRONG_EFFORT', optional: ['worker'], def: 'medium' },
+  { key: 'OPENAI_DAILY_CAP_USD', optional: ['worker'], def: '5', note: 'render.yaml: 2 staging, 5 production' },
+  { key: 'GEMINI_API_KEY', requiredIf: [PIPELINE_REAL, { key: 'AI_PROVIDER', is: 'gemini', unsetMeans: 'openai', roles: ['worker'] }], note: 'Google AI Studio, paid project' },
   { key: 'GEMINI_CHEAP_MODEL', optional: ['worker'], def: 'gemini-3.5-flash-lite' },
   { key: 'GEMINI_STRONG_MODEL', optional: ['worker'], def: 'gemini-3.8-flash' },
-  { key: 'APIFY_DAILY_CAP_USD', optional: ['worker'], def: '10', note: 'render.yaml: 3 staging, 10 production' },
-  { key: 'GEMINI_DAILY_CAP_USD', optional: ['worker'], def: '5', note: 'render.yaml: 2 staging, 5 production' },
+  { key: 'GEMINI_DAILY_CAP_USD', optional: ['worker'], def: '5' },
   { key: 'COLLECT_MIN_HOURS', optional: ['worker'], def: '', note: 'leave unset on Render: the admin settings interval decides; set only to override for a manual run' },
   { key: 'COMMENTS_PER_RUN', optional: ['worker'], def: '1500', note: 'comment budget per collection run' },
   { key: 'STORY_DORMANT_DAYS', optional: ['worker'], def: '4' },
@@ -70,12 +79,17 @@ const isSet = (key) => (process.env[key] ?? '').trim() !== '';
 
 function requirement(v, r) {
   if (v.required?.includes(r)) return 'required';
-  if (v.requiredIf?.roles.includes(r)) {
-    const c = v.requiredIf;
-    // An unset switch means its code default (PAYMENT_PROVIDER fake, PIPELINE_PROVIDER real).
-    const value = (process.env[c.key] ?? '').trim() || c.unsetMeans || '';
-    const active = c.isSet ? value !== '' : c.is ? value === c.is : value !== c.isNot;
-    return active ? `required (${c.key}${c.isSet ? ' set' : ` is ${value}`})` : `optional (${c.key}${c.isSet ? ' unset' : c.is ? ` is not ${c.is}` : ` is ${value}`})`;
+  const conditions = v.requiredIf ? [].concat(v.requiredIf) : [];
+  if (conditions[0]?.roles.includes(r)) {
+    const states = conditions.map((c) => {
+      // An unset switch means its code default (PAYMENT_PROVIDER fake, PIPELINE_PROVIDER real, AI_PROVIDER openai).
+      const value = (process.env[c.key] ?? '').trim() || c.unsetMeans || '';
+      const active = c.isSet ? value !== '' : c.is ? value === c.is : value !== c.isNot;
+      return { active, text: active ? `${c.key}${c.isSet ? ' set' : ` is ${value}`}` : `${c.key}${c.isSet ? ' unset' : c.is ? ` is not ${c.is}` : ` is ${value}`}` };
+    });
+    return states.every((s) => s.active)
+      ? `required (${states.map((s) => s.text).join(', ')})`
+      : `optional (${states.filter((s) => !s.active).map((s) => s.text).join(', ')})`;
   }
   if (v.optional?.includes(r)) return 'optional';
   return null;

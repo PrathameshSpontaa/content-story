@@ -16,6 +16,14 @@ export function loadEnv() {
   }
 }
 
+// The AI provider the pipeline calls and records spend under: AI_PROVIDER, openai (default) or gemini.
+export function aiProvider() {
+  loadEnv();
+  const value = (process.env.AI_PROVIDER ?? '').trim().toLowerCase() || 'openai';
+  if (value !== 'openai' && value !== 'gemini') throw new Error(`AI_PROVIDER must be openai or gemini, not "${value}".`);
+  return value;
+}
+
 export function requireEnv(name) {
   loadEnv();
   const value = (process.env[name] ?? '').trim();

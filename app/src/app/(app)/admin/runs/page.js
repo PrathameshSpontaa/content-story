@@ -1,7 +1,7 @@
 // Operations dashboard: the last runs with their cost, spend per day against the caps, margin
 // per action, and emails that failed or never went out.
 import Link from 'next/link';
-import { costByDay, listNotificationProblems, listRuns, marginByAction, spendToday } from '../../../../../lib/admin.js';
+import { PROVIDER_LABEL, costByDay, listNotificationProblems, listRuns, marginByAction, spendToday } from '../../../../../lib/admin.js';
 import { fmtDay, fmtNum, fmtTime, plural } from '../../../../../lib/format.js';
 import { requireAdmin } from '../../../../../lib/session.js';
 
@@ -51,7 +51,7 @@ export default async function RunsPage() {
       <dl className="stats">
         {today.map((t) => (
           <div key={t.provider}>
-            <dt>{t.provider === 'apify' ? 'Apify' : 'Gemini'} today (India time)</dt>
+            <dt>{PROVIDER_LABEL[t.provider]} today (India time)</dt>
             <dd>
               {usd(t.usd)} <small className="muted">of {usd(t.cap)}</small>
               <span className={`cap${t.pct >= 100 ? ' over' : t.pct >= 80 ? ' warn' : ''}`}>
@@ -130,7 +130,7 @@ export default async function RunsPage() {
             <tr>
               <th>Day</th>
               <th className="num">Apify</th>
-              <th className="num">Gemini</th>
+              <th className="num">AI</th>
               <th className="num">Other</th>
               <th className="num">Total</th>
               <th className="num">Events</th>
@@ -141,7 +141,7 @@ export default async function RunsPage() {
               <tr key={d.day}>
                 <td>{fmtDay(`${d.day}T12:00:00+05:30`)}</td>
                 <td className="num">{usd(d.apify)}</td>
-                <td className="num">{usd(d.gemini)}</td>
+                <td className="num">{usd(d.ai)}</td>
                 <td className="num">{d.other ? usd(d.other) : '—'}</td>
                 <td className="num">
                   <b>{usd(d.total)}</b>

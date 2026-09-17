@@ -145,7 +145,8 @@ services, confirm, then revoke the old one. Staging and production have separate
 | Key | Where to make the new one | Group key | Redeploy | Confirm (*shell*) |
 |---|---|---|---|---|
 | Apify | Apify console > Settings > API & Integrations > create token; delete the old one after | `APIFY_TOKEN` | worker | `node --input-type=module -e "const m = await import('./pipeline/apify.js'); console.log(await m.whoAmI())"` |
-| Gemini | Google AI Studio > API keys > create in the paid project; delete the old key in AI Studio (or Google Cloud > APIs & Services > Credentials) | `GEMINI_API_KEY` | worker | next run on /admin/runs has no Gemini error, or `npm run daily` on staging |
+| OpenAI | platform.openai.com > API keys > create a secret key in the same project; revoke the old one | `OPENAI_API_KEY` | worker | next run on /admin/runs has no OpenAI error, or `npm run daily` on staging |
+| Gemini (only with `AI_PROVIDER=gemini`) | Google AI Studio > API keys > create in the paid project; delete the old key in AI Studio (or Google Cloud > APIs & Services > Credentials) | `GEMINI_API_KEY` | worker | next run on /admin/runs has no Gemini error, or `npm run daily` on staging |
 | Resend | Resend > API Keys > create (sending access); delete the old one | `RESEND_API_KEY` (and `EMAIL_FROM` if the domain changed) | worker, web | the next housekeeping run sends waiting emails; nothing new under "Emails not sent" on /admin/runs |
 | Clerk | Clerk > API keys > add a new secret key, deploy, then delete the old one | `CLERK_SECRET_KEY` (and `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` if you changed instance) | web | sign out and in again |
 | Razorpay API | Razorpay > Account & Settings > API Keys > **Regenerate**. The old pair stops working immediately, so update the group and deploy right away | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | web | a test-mode top-up on staging |
@@ -197,9 +198,9 @@ You get an ops email with a `spend_cap:<provider>:<date>` note, and the run is `
    raising the cap:
    `update tracking_targets set active = false, paused_reason = 'runaway_cost' where id = '<target id>';`
 3. If the day was simply bigger (new customers, a busy news day), raise `APIFY_DAILY_CAP_USD` or
-   `GEMINI_DAILY_CAP_USD` in the environment group, **Manual Deploy** the worker, then
+   `OPENAI_DAILY_CAP_USD` in the environment group, **Manual Deploy** the worker, then
    `npm run daily`. Sources already collected today are skipped, and nobody is charged twice.
-4. Check that Apify's **Usage** page and Google Cloud billing agree with `cost_events`. Apify spend
+4. Check that Apify's **Usage** page and OpenAI's **Usage** page agree with `cost_events`. Apify spend
    we didn't record means something outside the pipeline used the token, so rotate `APIFY_TOKEN`
    (procedure 6).
 5. If the new cap is permanent, change it in `render.yaml` too, so a blueprint sync doesn't put

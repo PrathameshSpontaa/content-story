@@ -149,10 +149,10 @@ select
   coalesce((select sum(r.credits) from credit_reservations r where r.workspace_id = w.id and r.status = 'held'), 0) as held
 from workspaces w;
 
--- The real cost of every paid Apify run and Gemini call, for margin per action.
+-- The real cost of every paid Apify run and AI call (OpenAI or Gemini), for margin per action.
 create table cost_events (
   id            bigint generated always as identity primary key,
-  provider      text not null,                    -- 'apify' | 'gemini'
+  provider      text not null,                    -- 'apify' | 'openai' | 'gemini'
   detail        text,                             -- actor id or model
   run_id        uuid,
   workspace_id  uuid references workspaces (id) on delete set null,  -- null for shared collection

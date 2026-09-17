@@ -6,7 +6,7 @@
 //
 // A child process rather than an import: the job layer loads the pipeline with dynamic imports
 // that the Next.js bundler cannot follow, and a crash in the pipeline must not take the web server
-// down. The child inherits the web service's environment (DATABASE_URL, APIFY_TOKEN, GEMINI_API_KEY,
+// down. The child inherits the web service's environment (DATABASE_URL, APIFY_TOKEN, OPENAI_API_KEY,
 // caps), and is restarted if it exits.
 //
 // WORKER_IN_WEB turns it on or off: unset means on in production and off in development (the
