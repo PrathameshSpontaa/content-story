@@ -1,9 +1,12 @@
-// Operations dashboard: the last runs with their cost, spend per day against the caps, margin
-// per action, and emails that failed or never went out.
+// Operations dashboard: the last runs with who started them and their cost, spend per day against the
+// caps, what's left on the Apify and OpenAI accounts, margin per action, and emails that failed or
+// never went out.
 import Link from 'next/link';
-import { PROVIDER_LABEL, costByDay, listNotificationProblems, listRuns, marginByAction, spendToday } from '../../../../../lib/admin.js';
-import { fmtDay, fmtNum, fmtTime, plural } from '../../../../../lib/format.js';
+import { PROVIDER_LABEL, costByDay, listNotificationProblems, listRuns, marginByAction, openAiCreditEstimate, spendToday } from '../../../../../lib/admin.js';
+import { apifyBalance } from '../../../../../lib/apify-account.js';
+import { fmtAgo, fmtDay, fmtNum, fmtTime, plural } from '../../../../../lib/format.js';
 import { requireAdmin } from '../../../../../lib/session.js';
+import AdminNav from '../admin-nav.js';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Runs and spend' };
@@ -19,32 +22,100 @@ const summaryText = (summary) => {
     .join(' · ');
 };
 
-function AdminNav({ current }) {
+const capClass = (pct) => `cap${pct >= 100 ? ' over' : pct >= 80 ? ' warn' : ''}`;
+
+// Apify's own numbers for this month, cached for 5 minutes.
+function ApifyBalance({ apify }) {
+  if (!apify.ok) return <p className="muted-note">{apify.message}</p>;
   return (
-    <nav className="tabs admin-tabs" aria-label="Admin pages">
-      <Link href="/admin" className={current === 'admin' ? 'on' : undefined}>
-        Review and reports
-      </Link>
-      <Link href="/admin/runs" className={current === 'runs' ? 'on' : undefined}>
-        Runs and spend
-      </Link>
-      <Link href="/admin/settings" className={current === 'settings' ? 'on' : undefined}>
-        Settings
-      </Link>
-    </nav>
+    <>
+      <dl className="details">
+        <div className="details-row">
+          <dt>Used this month</dt>
+          <dd>
+            {usd(apify.usageUsd)} of {usd(apify.limitUsd)}
+            {apify.pct != null ? (
+              <span className={capClass(apify.pct)}>
+                <i style={{ width: `${Math.min(100, apify.pct)}%` }} />
+              </span>
+            ) : null}
+          </dd>
+        </div>
+        <div className="details-row">
+          <dt>Left</dt>
+          <dd>
+            <b>{usd(apify.leftUsd)}</b>
+          </dd>
+        </div>
+        {apify.cycleStart && apify.cycleEnd ? (
+          <div className="details-row">
+            <dt>Month</dt>
+            <dd>
+              {fmtDay(apify.cycleStart)} to {fmtDay(apify.cycleEnd)}
+            </dd>
+          </div>
+        ) : null}
+      </dl>
+      <p className="hint">From Apify, checked {fmtAgo(apify.checkedAt)}. Checked again after 5 minutes.</p>
+    </>
+  );
+}
+
+// OpenAI has no balance API: the amount entered on Settings minus the OpenAI spend we recorded since.
+function OpenAiBalance({ openai }) {
+  if (!openai.credit) {
+    return (
+      <p className="muted-note">
+        No credit amount set. Enter what OpenAI’s billing page shows on <Link href="/admin/settings">Settings</Link> and this shows roughly what’s left.
+      </p>
+    );
+  }
+  return (
+    <>
+      <dl className="details">
+        <div className="details-row">
+          <dt>Credit entered</dt>
+          <dd>
+            {usd(openai.credit)} <span className="sub">saved {fmtTime(openai.savedAt)}</span>
+          </dd>
+        </div>
+        <div className="details-row">
+          <dt>Spent since</dt>
+          <dd>{usd(openai.spent)}</dd>
+        </div>
+        <div className="details-row">
+          <dt>Left, roughly</dt>
+          <dd>
+            <b>{usd(Math.max(0, openai.left))}</b>
+            {openai.left < 0 ? <span className="sub err">We recorded more spend than the credit entered. Update it on Settings.</span> : null}
+          </dd>
+        </div>
+      </dl>
+      <p className="hint">
+        An estimate from our own cost records, not from OpenAI. <Link href="/admin/settings">Update the amount</Link> after a top-up.
+      </p>
+    </>
   );
 }
 
 export default async function RunsPage() {
   await requireAdmin();
-  const [runs, days, today, margin, problems] = await Promise.all([listRuns(50), costByDay(14), spendToday(), marginByAction(30), listNotificationProblems(20)]);
+  const [runs, days, today, margin, problems, apify, openai] = await Promise.all([
+    listRuns(50),
+    costByDay(14),
+    spendToday(),
+    marginByAction(30),
+    listNotificationProblems(20),
+    apifyBalance(),
+    openAiCreditEstimate(),
+  ]);
   const failed = runs.filter((r) => r.status === 'failed').length;
 
   return (
     <div className="page wide">
       <header className="pagehead">
         <h1>Runs and spend</h1>
-        <p className="dek">Every pipeline run with what it cost, spend against the daily caps, margin by action, and emails that didn’t go out.</p>
+        <p className="dek">Every pipeline run with who started it and what it cost, spend against the daily caps, what’s left on Apify and OpenAI, margin by action, and emails that didn’t go out.</p>
       </header>
       <AdminNav current="runs" />
 
@@ -54,7 +125,7 @@ export default async function RunsPage() {
             <dt>{PROVIDER_LABEL[t.provider]} today (India time)</dt>
             <dd>
               {usd(t.usd)} <small className="muted">of {usd(t.cap)}</small>
-              <span className={`cap${t.pct >= 100 ? ' over' : t.pct >= 80 ? ' warn' : ''}`}>
+              <span className={capClass(t.pct)}>
                 <i style={{ width: `${Math.min(100, t.pct)}%` }} />
               </span>
             </dd>
@@ -71,6 +142,20 @@ export default async function RunsPage() {
       </dl>
 
       <h2 className="sect">
+        Account balances <span>what’s left to spend with Apify and OpenAI</span>
+      </h2>
+      <div className="split">
+        <section className="panel" aria-labelledby="apify-h">
+          <h2 id="apify-h">Apify</h2>
+          <ApifyBalance apify={apify} />
+        </section>
+        <section className="panel" aria-labelledby="openai-h">
+          <h2 id="openai-h">OpenAI</h2>
+          <OpenAiBalance openai={openai} />
+        </section>
+      </div>
+
+      <h2 className="sect">
         Runs <span>last {runs.length}, newest first</span>
       </h2>
       <div className="tablewrap">
@@ -78,6 +163,7 @@ export default async function RunsPage() {
           <thead>
             <tr>
               <th>Run</th>
+              <th>Started by</th>
               <th>Status</th>
               <th>Started</th>
               <th className="num">Took</th>
@@ -90,7 +176,11 @@ export default async function RunsPage() {
               <tr key={r.id} id={`run-${r.id}`}>
                 <td>
                   <b>{r.kind}</b>
-                  <span className="sub">{r.workspace_name ?? 'shared'}</span>
+                  <span className="sub">{r.workspace_id ? <Link href={`/admin/workspaces/${r.workspace_id}`}>{r.workspace_name ?? 'workspace'}</Link> : 'shared'}</span>
+                </td>
+                <td>
+                  {r.started_by.who ?? '—'}
+                  {r.started_by.how ? <span className="sub">{r.started_by.how}</span> : null}
                 </td>
                 <td>
                   <span className={`status ${r.status === 'failed' ? 'failed' : r.status === 'running' ? 'queued' : r.status === 'done' || r.status === 'finished' || r.status === 'succeeded' ? 'ready' : ''}`}>
@@ -112,7 +202,7 @@ export default async function RunsPage() {
             ))}
             {!runs.length ? (
               <tr>
-                <td colSpan={6} className="muted">
+                <td colSpan={7} className="muted">
                   No runs yet.
                 </td>
               </tr>

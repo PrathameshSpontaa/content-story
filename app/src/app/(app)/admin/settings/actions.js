@@ -6,7 +6,13 @@ import { saveSettingsSection } from '../../../../../lib/admin.js';
 import { requestFullRefresh } from '../../../../../lib/refresh.js';
 import { requireAdmin } from '../../../../../lib/session.js';
 
-const SAVED = { timing: 'Timing saved.', review: 'AI review saved.', on_demand: 'On-demand refresh saved.' };
+const WORKER_NOTE = 'Changes apply within a minute while the worker is running.';
+const SAVED = {
+  timing: `Timing saved. ${WORKER_NOTE}`,
+  review: `AI review saved. ${WORKER_NOTE}`,
+  on_demand: `On-demand refresh saved. ${WORKER_NOTE}`,
+  openai: 'OpenAI credit saved. OpenAI spend is counted from now.',
+};
 
 async function save(section, formData) {
   const session = await requireAdmin();
@@ -19,8 +25,9 @@ async function save(section, formData) {
   }
   revalidatePath('/admin/settings');
   revalidatePath('/admin');
+  revalidatePath('/admin/runs');
   revalidatePath('/stories');
-  return { ok: true, message: `${SAVED[section]} Changes apply within a minute while the worker is running.` };
+  return { ok: true, message: SAVED[section] };
 }
 
 export async function saveTimingAction(_previous, formData) {
@@ -33,6 +40,10 @@ export async function saveReviewAction(_previous, formData) {
 
 export async function saveOnDemandAction(_previous, formData) {
   return save('on_demand', formData);
+}
+
+export async function saveOpenAiAction(_previous, formData) {
+  return save('openai', formData);
 }
 
 export async function runCollectionAction() {

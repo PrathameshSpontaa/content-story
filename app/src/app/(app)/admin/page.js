@@ -1,33 +1,34 @@
-// Admin home: the story review queue (an audit of what the AI editor published, held, rejected and
-// merged, with what still needs a person), the report queue and every workspace.
+// Admin home: the story review queue (an audit of what the AI editor and the checks published, held,
+// rejected and merged across the shared feed and every workspace's following feed, with what still
+// needs a person), the report queue and every workspace.
 import { randomUUID } from 'node:crypto';
 import Link from 'next/link';
-import { REVIEW_FILTERS, adminOverview, decidedBy, listReportRuns, listStoriesForReview, listUnsureMergePairs, needsYouReason, reviewCounts } from '../../../../lib/admin.js';
+import {
+  REVIEW_FILTERS,
+  adminOverview,
+  decidedBy,
+  listReportRuns,
+  listStoriesForReview,
+  listUnsureMergePairs,
+  needsYouReason,
+  reportStoryChoices,
+  reviewCounts,
+} from '../../../../lib/admin.js';
 import { PLATFORM_NAMES, dayRange, fmtDay, fmtNum, fmtTime } from '../../../../lib/format.js';
 import { REPORT_STATUS, listAllReports } from '../../../../lib/reports.js';
 import { requireAdmin } from '../../../../lib/session.js';
 import { getSettings } from '../../../../lib/settings.js';
 import ActionForm from '../../components/action-form.js';
 import { grantCreditsAction, pairAction, publishAction, rejectAction, updateReportAction } from './actions.js';
+import AdminNav from './admin-nav.js';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Admin' };
 
-// The same links sit on every admin page.
-function AdminNav({ current }) {
-  return (
-    <nav className="tabs admin-tabs" aria-label="Admin pages">
-      <Link href="/admin" className={current === 'admin' ? 'on' : undefined}>
-        Review and reports
-      </Link>
-      <Link href="/admin/runs" className={current === 'runs' ? 'on' : undefined}>
-        Runs and spend
-      </Link>
-      <Link href="/admin/settings" className={current === 'settings' ? 'on' : undefined}>
-        Settings
-      </Link>
-    </nav>
-  );
+// Which feed a story is in: a workspace (linked to its admin page) or the old shared feed.
+function FeedOf({ s }) {
+  if (!s.feed_workspace_id) return 'Shared feed';
+  return <Link href={`/admin/workspaces/${s.feed_workspace_id}`}>{s.workspace_name ?? 'A workspace'}</Link>;
 }
 
 const STORY_STATE = (s) => (s.status === 'merged' ? 'merged' : s.status === 'rejected' ? 'rejected' : s.published_at ? 'published' : decidedBy(s) === 'human' ? 'unpublished' : 'needs you');
@@ -51,6 +52,7 @@ function Decision({ s, autoPublish }) {
       <span className={`status ${STATE_CLASS[state] ?? ''}`}>{state}</span>
       <span className="sub">
         {by === 'ai' ? <b className="by-ai">AI</b> : by === 'human' ? <b>{s.reviewed_by_email ?? 'A person'}</b> : null}
+        {!by && state === 'published' && s.feed_kind === 'following' ? 'Checks passed' : ''}
         {by && s.reviewed_at ? ` · ${fmtDay(s.reviewed_at)}` : ''}
         {state === 'needs you' ? `${by ? ' · ' : ''}${needsYouReason(s, { autoPublish })}` : ''}
         {state === 'merged' && s.merged_into ? (
@@ -92,13 +94,13 @@ export default async function AdminPage({ searchParams }) {
   await requireAdmin();
   const { filter: rawFilter, notice = '' } = await searchParams;
   const settings = await getSettings();
-  const [{ totals, workspaces }, reports, counts, pairs, reportRuns, published] = await Promise.all([
+  const [{ totals, workspaces }, reports, counts, pairs, reportRuns, storyChoices] = await Promise.all([
     adminOverview(),
     listAllReports(),
     reviewCounts(),
     listUnsureMergePairs({ minConfidence: settings.merge_min_confidence, autoMerge: settings.auto_merge }),
     listReportRuns(),
-    listStoriesForReview('published'),
+    reportStoryChoices(),
   ]);
   const filter = REVIEW_FILTERS[rawFilter] ? rawFilter : counts.needs ? 'needs' : 'ai_published';
   const stories = filter === 'pairs' ? [] : await listStoriesForReview(filter);
@@ -110,7 +112,10 @@ export default async function AdminPage({ searchParams }) {
     <div className="page wide">
       <header className="pagehead">
         <h1>Admin</h1>
-        <p className="dek">What the AI published, held and merged, what needs you, report requests, and every workspace. Only emails in ADMIN_EMAILS see this page.</p>
+        <p className="dek">
+          What the AI and the checks published, held and merged in the shared feed and every workspace’s feed, what needs you, report requests, and every workspace. Only emails in
+          ADMIN_EMAILS see this page.
+        </p>
       </header>
       <AdminNav current="admin" />
 
@@ -191,7 +196,7 @@ export default async function AdminPage({ searchParams }) {
                       </li>
                     </ol>
                     <span className="sub">
-                      Flagged {fmtTime(p.created_at)}
+                      <FeedOf s={p} /> · Flagged {fmtTime(p.created_at)}
                       {p.reason ? ` · ${p.reason}` : ''}
                     </span>
                   </td>
@@ -246,7 +251,7 @@ export default async function AdminPage({ searchParams }) {
                     <td>
                       <Link href={`/admin/stories/${s.id}`}>{s.headline ?? 'Untitled'}</Link>
                       <span className="sub">
-                        {s.category ?? 'no category'} · {s.status}
+                        <FeedOf s={s} /> · {s.category ?? 'no category'} · {s.status}
                         {s.merge_candidates ? ` · ${s.merge_candidates} possible duplicate${s.merge_candidates > 1 ? 's' : ''}` : ''}
                       </span>
                     </td>
@@ -353,9 +358,9 @@ export default async function AdminPage({ searchParams }) {
                     <span>Finished story</span>
                     <select name="storyId" defaultValue={r.story_id ?? ''}>
                       <option value="">Not linked yet</option>
-                      {published.map((s) => (
+                      {(storyChoices[r.id] ?? []).map((s) => (
                         <option key={s.id} value={s.id}>
-                          {s.headline}
+                          {s.headline ?? 'Untitled'}
                         </option>
                       ))}
                     </select>
@@ -431,7 +436,7 @@ export default async function AdminPage({ searchParams }) {
             {workspaces.map((w) => (
               <tr key={w.id}>
                 <td>
-                  <b>{w.name}</b>
+                  <Link href={`/admin/workspaces/${w.id}`}>{w.name}</Link>
                   <span className="sub">
                     {w.owners ?? 'no owner'} · since {fmtDay(w.created_at)}
                   </span>

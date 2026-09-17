@@ -20,6 +20,7 @@ const sure = (c) => {
   return `${Math.round(n > 1 ? n : n * 100)}% sure`;
 };
 const VERDICT_CLASS = { publish: 'ready', hold: 'queued', reject: 'failed' };
+const FEED_KIND = { following: 'Following feed', reports: 'Reports feed' };
 
 // The AI's call on a possible duplicate pair, from this story's side: `self` is this story's id.
 function PairDecision({ c, self }) {
@@ -47,8 +48,10 @@ export async function generateMetadata({ params }) {
 export default async function ReviewStoryPage({ params, searchParams }) {
   await requireAdmin();
   const [{ id }, { notice = '' }] = await Promise.all([params, searchParams]);
-  const [story, all] = await Promise.all([getStoryForReview(id), listStoriesForReview()]);
+  const story = await getStoryForReview(id);
   if (!story) notFound();
+  // Only stories in the same feed can be merged, so only those are offered.
+  const all = await listStoriesForReview('all', { feedId: story.feed_id });
   const others = all.filter((s) => s.id !== story.id && !['merged', 'rejected'].includes(s.status));
   const edit = story.feed_edit ?? {};
   const checks = story.checks ?? {};
@@ -71,7 +74,14 @@ export default async function ReviewStoryPage({ params, searchParams }) {
 
       <header className="pagehead review-head">
         <p className="sub">
-          {story.feed_workspace_id ? `Workspace feed: ${story.feed_name}` : 'Shared feed'} · {story.category ?? 'no category'} · heat {story.heat ?? '—'} · {story.status}
+          {story.feed_workspace_id ? (
+            <>
+              {FEED_KIND[story.feed_kind] ?? `Feed “${story.feed_name}”`} of <Link href={`/admin/workspaces/${story.feed_workspace_id}`}>{story.workspace_name ?? 'a workspace'}</Link>
+            </>
+          ) : (
+            'Shared feed'
+          )}{' '}
+          · {story.category ?? 'no category'} · heat {story.heat ?? '—'} · {story.status}
           {story.merged_into ? (
             <>
               {' → '}
@@ -300,14 +310,21 @@ export default async function ReviewStoryPage({ params, searchParams }) {
                       {c.resolved_at ? ` · resolved ${fmtDay(c.resolved_at)}` : ''}
                     </span>
                     <PairDecision c={c} self={story.id} />
+                    {!c.resolved_at && c.other_feed_id !== story.feed_id ? <span className="sub">In another feed, so it can’t be merged.</span> : null}
                     {!c.resolved_at && story.status !== 'merged' ? (
                       <form action={mergeAction} className="btnrow">
                         <input type="hidden" name="id" value={story.id} />
                         <input type="hidden" name="otherId" value={c.other_id} />
-                        <button type="submit" name="decision" value="merge_this_into_other" className="btn ghost sm" disabled={['merged', 'rejected'].includes(c.other_status)}>
+                        <button
+                          type="submit"
+                          name="decision"
+                          value="merge_this_into_other"
+                          className="btn ghost sm"
+                          disabled={['merged', 'rejected'].includes(c.other_status) || c.other_feed_id !== story.feed_id}
+                        >
                           Merge this into it
                         </button>
-                        <button type="submit" name="decision" value="merge_other_into_this" className="btn ghost sm" disabled={c.other_status === 'merged'}>
+                        <button type="submit" name="decision" value="merge_other_into_this" className="btn ghost sm" disabled={c.other_status === 'merged' || c.other_feed_id !== story.feed_id}>
                           Merge it into this
                         </button>
                         <button type="submit" name="decision" value="keep_separate" className="btn ghost sm">

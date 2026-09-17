@@ -1,5 +1,5 @@
 // Operator settings: when collection runs and what it costs, whether the AI publishes and merges
-// stories on its own, and the limits on users' on-demand refreshes.
+// stories on its own, the limits on users' on-demand refreshes, and the OpenAI credit to count down from.
 import Link from 'next/link';
 import { PROVIDER_LABEL, spendToday } from '../../../../../lib/admin.js';
 import { fmtTime } from '../../../../../lib/format.js';
@@ -7,26 +7,11 @@ import { scheduleSummary } from '../../../../../lib/refresh.js';
 import { SETTINGS, getSettings } from '../../../../../lib/settings.js';
 import { requireAdmin } from '../../../../../lib/session.js';
 import ActionForm from '../../../components/action-form.js';
-import { runCollectionAction, saveOnDemandAction, saveReviewAction, saveTimingAction } from './actions.js';
+import AdminNav from '../admin-nav.js';
+import { runCollectionAction, saveOnDemandAction, saveOpenAiAction, saveReviewAction, saveTimingAction } from './actions.js';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Admin settings' };
-
-function AdminNav({ current }) {
-  return (
-    <nav className="tabs admin-tabs" aria-label="Admin pages">
-      <Link href="/admin" className={current === 'admin' ? 'on' : undefined}>
-        Review and reports
-      </Link>
-      <Link href="/admin/runs" className={current === 'runs' ? 'on' : undefined}>
-        Runs and spend
-      </Link>
-      <Link href="/admin/settings" className={current === 'settings' ? 'on' : undefined}>
-        Settings
-      </Link>
-    </nav>
-  );
-}
 
 const HOURS = Array.from({ length: 24 }, (_, h) => h);
 const clock = (h) => `${String(h).padStart(2, '0')}:00`;
@@ -53,7 +38,7 @@ export default async function AdminSettingsPage() {
     <div className="page wide">
       <header className="pagehead">
         <h1>Settings</h1>
-        <p className="dek">When collection runs, whether the AI publishes and merges stories on its own, and how often people can refresh.</p>
+        <p className="dek">When collection runs, whether the AI publishes and merges stories on its own, and how often people can refresh, and your OpenAI credit.</p>
       </header>
       <AdminNav current="settings" />
 
@@ -224,6 +209,31 @@ export default async function AdminSettingsPage() {
                   />
                 </label>
               </div>
+            </ActionForm>
+          </section>
+
+          <section className="panel" aria-labelledby="openai-h">
+            <h2 id="openai-h">OpenAI credit</h2>
+            <p className="muted-note">
+              OpenAI doesn’t tell us how much prepaid credit is left. Enter what its billing page shows. <Link href="/admin/runs">Runs and spend</Link> then estimates what’s left from the OpenAI spend
+              we record after you save.
+            </p>
+            <ActionForm action={saveOpenAiAction} submitLabel="Save OpenAI credit" resetOnSuccess={false} className="topgap">
+              <label className="field">
+                <span>
+                  Credit left <small>USD</small>
+                </span>
+                <input
+                  type="number"
+                  name="openai_credit_usd"
+                  min={SETTINGS.openai_credit_usd.min}
+                  max={SETTINGS.openai_credit_usd.max}
+                  step={0.01}
+                  defaultValue={settings.openai_credit_usd || ''}
+                  placeholder="e.g. 50"
+                />
+              </label>
+              <p className="setting-note flush">Save it again after each top-up. Leave it empty to stop the estimate.</p>
             </ActionForm>
           </section>
         </div>

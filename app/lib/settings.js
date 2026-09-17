@@ -13,6 +13,9 @@ export const SETTINGS = {
   on_demand_enabled: { def: true, type: 'bool', label: 'Users can refresh on demand' },
   on_demand_cooldown_minutes: { def: 30, type: 'int', min: 5, max: 1440, label: 'Minutes between refreshes per workspace' },
   on_demand_max_per_day: { def: 6, type: 'int', min: 1, max: 48, label: 'Refreshes per workspace per day' },
+  // OpenAI's API doesn't report prepaid credit, so an admin types it in; 0 means not set. The admin
+  // panel counts OpenAI spend from when it was saved (app_settings.updated_at).
+  openai_credit_usd: { def: 0, type: 'num', min: 0, max: 100000, label: 'OpenAI credit left (USD)' },
 };
 
 export const DEFAULTS = Object.fromEntries(Object.entries(SETTINGS).map(([k, s]) => [k, s.def]));
