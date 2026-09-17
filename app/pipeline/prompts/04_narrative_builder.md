@@ -11,7 +11,7 @@ afterwards, so this step outputs neither.
 
 ```json
 {
-  "story": { "story_id": "s1", "working_title": "" },
+  "story": { "story_id": "s1", "working_title": "", "tag": { "name": "Brand deals", "rule": "" } },
   "entity_ranking": [
     { "name": "Inkwell", "type": "product", "posts_mentioning": 38, "score": 41.2 }
   ],
@@ -51,6 +51,12 @@ afterwards, so this step outputs neither.
 of salience × log(1 + lift).
 
 ## Instructions
+
+`story.tag`, when present, is the kind of story the reader asked for, with
+the `rule` that says what counts. Tell the story that way: for a brand deal,
+what was promoted and how the audience took it; for a post that broke out,
+what it did and what made it work; for a trend, who is on it and how it
+spread. Everything below still applies.
 
 **A. Main character.** The subject the creators are actually showing or
 reacting to. Start from the top of `entity_ranking`, but skip an entity that

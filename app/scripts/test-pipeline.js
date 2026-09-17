@@ -21,7 +21,7 @@ const { pool } = await import('../lib/db.js');
 const { generateJson } = await import('../pipeline/ai.js');
 const { computeStats, entityRanking, heatScore } = await import('../pipeline/stats.js');
 const { lengthProblems, verifyStory } = await import('../pipeline/verify.js');
-const { STATUSES, buildStories, findAliasMerges, loadWorld, nextStatus, splitCandidates } = await import('../pipeline/storybuild.js');
+const { PROMPT_VERSION, STATUSES, buildStories, findAliasMerges, loadWorld, nextStatus, splitCandidates } = await import('../pipeline/storybuild.js');
 const { runDaily, runReport, sharedFeedId, workspaceFeedId } = await import('../pipeline/index.js');
 
 const results = [];
@@ -265,7 +265,7 @@ try {
     assert.deepEqual(v.checks.retried, ['writer', 'edit']);
     assert.equal(v.written.narrative.length, 3);
     assert.ok(v.feed_edit.headline.split(/\s+/).length <= 12);
-    assert.equal(v.models.prompt_version, 'prod-2026-09-16');
+    assert.equal(v.models.prompt_version, PROMPT_VERSION);
     assert.equal(v.stats.sources, 2);
   });
 

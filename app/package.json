@@ -24,7 +24,8 @@
     "test:notify": "node scripts/test-notify.js",
     "test:admin": "node scripts/test-admin.js",
     "test:refresh": "node scripts/test-refresh.js",
-    "test:referrals": "node scripts/test-referrals.js"
+    "test:referrals": "node scripts/test-referrals.js",
+    "test:watchlists": "node scripts/test-watchlists.js"
   },
   "keywords": [],
   "author": "",

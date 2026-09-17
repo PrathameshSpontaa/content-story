@@ -300,6 +300,7 @@ export default async function StoryPage({ params }) {
       <article className="storydoc">
         <header className="hero">
           <p className="kicker">
+            {story.tag ? <span className="tagchip">{story.tag}</span> : null}
             <span className="mc">{narrative.main_character?.name}</span>
             <span aria-hidden="true">·</span>
             <span title={`Posts from ${dayRange(story.first_post_at, story.last_post_at)}`}>

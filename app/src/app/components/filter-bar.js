@@ -4,14 +4,15 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import Icon from './icons.js';
 
-// Search and platform filter for the stories page; both live in the URL.
-export default function FilterBar({ tab, q, platform, platforms }) {
+// Search and platform filter for the stories page; both live in the URL next to `base` (the tab,
+// watchlist and tag being shown), which a new search or platform keeps.
+export default function FilterBar({ base = {}, q, platform, platforms }) {
   const router = useRouter();
   const [text, setText] = useState(q);
 
   const go = (change) => {
     const params = new URLSearchParams();
-    for (const [key, value] of Object.entries({ tab, q: text.trim(), platform, ...change })) {
+    for (const [key, value] of Object.entries({ ...base, q: text.trim(), platform, ...change })) {
       if (value) params.set(key, value);
     }
     const qs = params.toString();

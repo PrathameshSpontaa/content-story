@@ -1,18 +1,20 @@
 // Story building: groups newly understood posts into new stories or attaches them to existing ones,
 // then for every story that changed runs the narrative builder, writer, platform lens and feed editor,
 // with code doing every number and check, and writes a new version. Stories are never deleted.
-// A workspace's following feed takes only posts from what it follows, publishes a story when its checks
-// pass and lets the AI merge split pairs. In the old shared feed the AI editor also decides publishing.
+// A watchlist's feed takes only posts from the follows in that watchlist and makes only stories that fit
+// its tags; it publishes a story when its checks pass and lets the AI merge split pairs. In the old shared
+// feed the AI editor also decides publishing.
 import { createHash, randomUUID } from 'node:crypto';
 import { pool, tx } from '../lib/db.js';
-import { followedPost } from '../lib/followed.js';
+import { followedPost, watchlistPost } from '../lib/followed.js';
 import { getSettings } from '../lib/settings.js';
+import { watchlistForStories } from '../lib/watchlists.js';
 import { judgeSameStory, reviewStory } from './editor.js';
 import { MODELS, RETRY_MARKER, generateJson, loadPrompt } from './ai.js';
 import { commentWeight, computeStats, entityRanking, heatScore, round1, storyCounts } from './stats.js';
 import { lengthProblems, mainCharacterProblem, sameName, verifyStory } from './verify.js';
 
-export const PROMPT_VERSION = 'prod-2026-09-16';
+export const PROMPT_VERSION = 'prod-2026-09-17';
 export const STATUSES = ['draft', 'emerging', 'active', 'peaked', 'dormant', 'merged', 'rejected'];
 const LIVE = ['draft', 'emerging', 'active', 'peaked'];
 const PLATFORM_ORDER = ['x', 'youtube', 'linkedin', 'instagram', 'tiktok', 'reddit'];
@@ -158,24 +160,30 @@ async function ask(ctx, { step, prompt, input, label, problems = null, model = M
   return out;
 }
 
-function groupingInput(world, windowIds, existing) {
+// A watchlist's grouping also gets its name, tags and followed brands, and each existing story's tag.
+function groupingInput(world, windowIds, existing, watchlist = null) {
   const cards = windowIds
     .map((id) => [world.postById.get(id), world.cardByPost.get(id)])
     .filter(([p, c]) => p && c)
     .sort(([a], [b]) => ms(a.published_at) - ms(b.published_at))
     .map(([p, c]) => ({
-      post_id: p.post_id, platform: p.platform, creator: p.creator, published_at: p.published_at, lift: p.lift ?? null, about: c.about,
+      post_id: p.post_id, platform: p.platform, creator: p.creator, published_at: p.published_at, lift: p.lift ?? null, type: c.type, about: c.about,
       entities: c.entities.map((e) => e.name), claims: c.claims.map((k) => k.text), shared_urls: p.shared_urls ?? [], quotes_post_id: null,
     }));
   const times = cards.map((c) => c.published_at).filter(Boolean).sort();
-  return {
+  const input = {
     window: { from: times[0]?.slice(0, 10) ?? null, to: times.at(-1)?.slice(0, 10) ?? null },
     cards,
-    existing_stories: existing.map((s) => ({ story_id: s.id, main_entity: s.main_entity, headline: s.headline, last_post_at: iso(s.last_post_at), post_ids: s.post_ids })),
+    existing_stories: existing.map((s) => ({
+      story_id: s.id, ...(watchlist ? { tag: s.tag ?? null } : {}), main_entity: s.main_entity, headline: s.headline, last_post_at: iso(s.last_post_at), post_ids: s.post_ids,
+    })),
   };
+  if (!watchlist) return input;
+  const tags = watchlist.tags.map(({ name, rule, minSources }) => ({ name, rule, min_sources: minSources }));
+  return { watchlist: watchlist.name, tags, brands: watchlist.brands ?? [], ...input };
 }
 
-function builderInput(world, postIds, { label, title, ranking }) {
+function builderInput(world, postIds, { label, title, ranking, tag = null }) {
   const cards = [];
   const commentGroups = [];
   const creatorReplies = [];
@@ -200,7 +208,7 @@ function builderInput(world, postIds, { label, title, ranking }) {
     }
   }
   return {
-    story: { story_id: label, working_title: title },
+    story: { story_id: label, working_title: title, ...(tag ? { tag } : {}) },
     entity_ranking: ranking.map(({ name, type, posts_mentioning, score }) => ({ name, type, posts_mentioning, score })),
     cards,
     comment_groups: commentGroups,
@@ -208,13 +216,14 @@ function builderInput(world, postIds, { label, title, ranking }) {
   };
 }
 
-function writerInput(world, postIds, narrative, stats, builderIn) {
+function writerInput(world, postIds, narrative, stats, builderIn, tag = null) {
   const commentIds = new Set();
   for (const b of narrative.beats ?? []) (b.source_comment_ids ?? []).forEach((id) => commentIds.add(id));
   for (const a of narrative.angles ?? []) (a.evidence ?? []).forEach((e) => world.commentById.has(e.source_id) && commentIds.add(e.source_id));
   for (const g of builderIn.comment_groups) g.samples.forEach((s) => commentIds.add(s.comment_id));
   for (const r of builderIn.creator_replies) commentIds.add(r.comment_id);
   return {
+    ...(tag ? { tag } : {}),
     narrative,
     numbers: {
       creators: stats.creators,
@@ -283,9 +292,10 @@ function lensInput(world, postIds, narrative, stats, { label, title }) {
   };
 }
 
-function editInput(label, narrative, written, lens, stats) {
+function editInput(label, narrative, written, lens, stats, tag = null) {
   return {
     story_id: label,
+    ...(tag ? { tag } : {}),
     main_character: narrative.main_character?.name,
     current_headline: written.headline,
     narrative: (written.narrative ?? []).map((s) => stripCites(s.sentence)),
@@ -461,6 +471,22 @@ function enoughForStory(world, postIds) {
   return (posts.length >= 2 && sources >= 2) || posts.some((p) => (Number(p.lift) || 0) >= 3);
 }
 
+// The minimum for a new story of a watchlist tag: one post, or for a tag that needs 2 sources, what
+// enoughForStory asks.
+function enoughForTag(world, postIds, tag) {
+  return tag.minSources === 2 ? enoughForStory(world, postIds) : postIds.some((id) => world.postById.has(id));
+}
+
+// The tag a story is built for: the one it was made for (under its current name), else the one the
+// grouping gave it now. Null outside watchlists.
+function storyTag(ctx, plan) {
+  const tags = ctx.watchlist?.tags ?? [];
+  const current = plan.existing?.tag_id ? tags.find((t) => t.id === plan.existing.tag_id) : plan.tag;
+  const name = current?.name ?? plan.existing?.tag ?? null;
+  return name ? { id: current?.id ?? plan.existing?.tag_id ?? null, name, rule: current?.rule ?? null } : null;
+}
+const tagForPrompt = (tag) => (tag ? { name: tag.name, ...(tag.rule ? { rule: tag.rule } : {}) } : null);
+
 // ─── One story ──────────────────────────────────────────────────────────────
 
 async function buildOne(ctx, plan) {
@@ -477,10 +503,11 @@ async function buildOne(ctx, plan) {
   const canonical = (name) => ctx.aliases.get(lower(name)) ?? `name:${lower(name)}`;
   const ranking = entityRanking(world, postIds, canonical);
   const title = plan.title || plan.existing?.headline || '';
+  const tag = storyTag(ctx, plan);
   const retried = [];
 
   // Narrative builder, re-run once if the main character isn't one the posts are about.
-  const builderIn = builderInput(world, postIds, { label, title, ranking });
+  const builderIn = builderInput(world, postIds, { label, title, ranking, tag: tagForPrompt(tag) });
   let narrative = await ask(ctx, { step: 'builder', prompt: '04_narrative_builder', input: builderIn, label });
   let mainProblem = mainCharacterProblem({ narrative, world, postIds, ranking, canonical });
   if (mainProblem) {
@@ -492,7 +519,7 @@ async function buildOne(ctx, plan) {
 
   const stats = computeStats({ storyId, narrative, world, postIds, now });
 
-  const writerIn = writerInput(world, postIds, narrative, stats, builderIn);
+  const writerIn = writerInput(world, postIds, narrative, stats, builderIn, tagForPrompt(tag));
   let written = await ask(ctx, { step: 'writer', prompt: '05_story_writer', input: writerIn, label });
   if (lengthProblems({ written }).writer.some((p) => p.hard)) {
     retried.push('writer');
@@ -504,7 +531,7 @@ async function buildOne(ctx, plan) {
   const lens = await ask(ctx, { step: 'lens', prompt: '06_platform_lens', input: lensIn, label });
   lens.story_id = storyId;
 
-  const editIn = editInput(label, narrative, written, lens, stats);
+  const editIn = editInput(label, narrative, written, lens, stats, tagForPrompt(tag));
   let edit = await ask(ctx, { step: 'edit', prompt: '07_feed_editor', input: editIn, label });
   if (lengthProblems({ edit }).edit.some((p) => p.hard)) {
     retried.push('edit');
@@ -552,9 +579,9 @@ async function buildOne(ctx, plan) {
     const note = applied ? `AI: ${applied.reason}`.slice(0, 500) : null;
     if (isNew) {
       await client.query(
-        `insert into stories (id, feed_id, status, category, main_entity_id, first_post_at, last_post_at, heat, published_at, review_source, review_note, reviewed_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, case when $9 then now() end, case when $10::text is not null then 'ai' end, $10, case when $10::text is not null then now() end)`,
-        [storyId, feed.id, finalStatus, stats.category, mainEntityId, stats.first_post_at, stats.last_post_at, stats.heat, publish, note],
+        `insert into stories (id, feed_id, status, category, main_entity_id, first_post_at, last_post_at, heat, published_at, review_source, review_note, reviewed_at, tag_id, tag)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, case when $9 then now() end, case when $10::text is not null then 'ai' end, $10, case when $10::text is not null then now() end, $11, $12)`,
+        [storyId, feed.id, finalStatus, stats.category, mainEntityId, stats.first_post_at, stats.last_post_at, stats.heat, publish, note, tag?.id ?? null, tag?.name ?? null],
       );
     } else {
       // A newer version that fails checks never unpublishes; the page keeps the latest passed version.
@@ -564,9 +591,10 @@ async function buildOne(ctx, plan) {
                 review_source = case when $10::text is not null then 'ai' else review_source end,
                 review_note = coalesce($10, review_note),
                 reviewed_at = case when $10::text is not null then now() else reviewed_at end,
-                reviewed_by = case when $10::text is not null then null else reviewed_by end
+                reviewed_by = case when $10::text is not null then null else reviewed_by end,
+                tag_id = coalesce(tag_id, $11::uuid), tag = coalesce($12, tag)
           where id = $1`,
-        [storyId, finalStatus, stats.category, mainEntityId, stats.first_post_at, stats.last_post_at, stats.heat, publish, reject, note],
+        [storyId, finalStatus, stats.category, mainEntityId, stats.first_post_at, stats.last_post_at, stats.heat, publish, reject, note, tag?.id ?? null, tag?.name ?? null],
       );
     }
     for (const postId of plan.newPostIds) {
@@ -638,7 +666,8 @@ async function refreshOthers(feedId, skipIds, now, log) {
 
 // Reads the grouping model's answer into plans: attach new posts to an existing story, or start a
 // new one. A post goes to one story; posts already in a story, or not in the window, are ignored.
-function planFromGrouping(out, windowIds, existing) {
+// With a watchlist's `tags`, each plan carries the tag the model named (null when it isn't one of them).
+function planFromGrouping(out, windowIds, existing, tags = null) {
   const windowSet = new Set(windowIds);
   const byId = new Map(existing.map((s) => [s.id, s]));
   const storyOfPost = new Map();
@@ -670,13 +699,14 @@ function planFromGrouping(out, windowIds, existing) {
       title: s.working_title ?? '',
       why: s.why ?? null,
       confidence: Number.isFinite(Number(s.confidence)) ? Number(s.confidence) : null,
+      ...(tags ? { tag: tags.find((t) => lower(t.name) === lower(s.tag)) ?? null, tagName: s.tag ?? null } : {}),
     });
   }
   return plans;
 }
 
 // A story as the grouping step and a rebuild see it (select from stories s left join entities e).
-const EXISTING_COLUMNS = `s.id::text, s.status::text, s.heat, s.first_post_at, s.last_post_at, e.name as main_entity,
+const EXISTING_COLUMNS = `s.id::text, s.status::text, s.heat, s.first_post_at, s.last_post_at, e.name as main_entity, s.tag_id::text, s.tag,
   (select coalesce(v.feed_edit ->> 'headline', v.written ->> 'headline') from story_versions v where v.story_id = s.id order by v.version desc limit 1) as headline,
   array(select sp.post_id from story_posts sp where sp.story_id = s.id order by sp.post_id) as post_ids`;
 
@@ -706,34 +736,44 @@ async function runPool(items, size, fn) {
 // `treatAsShared` is for tests only: a throwaway workspace feed gets the shared feed's AI editor and
 // merge rules, so no test story ever shows in the real shared feed.
 export async function buildStories({ runId = null, feedId, postIds = null, single = false, log = console.log, now = Date.now(), title = null, treatAsShared = false }) {
-  const { rows: feeds } = await pool.query('select id, workspace_id, name, kind, grouped_post_ids from feeds where id = $1', [feedId]);
+  const { rows: feeds } = await pool.query('select id, workspace_id, name, kind, watchlist_id, grouped_post_ids, grouped_key from feeds where id = $1', [feedId]);
   const feed = feeds[0];
   if (!feed) throw new Error(`feed ${feedId} does not exist`);
   const nowMs = ms(now);
   const startedAt = new Date();
+  const following = feed.kind === 'following' && !treatAsShared;
+  const watchlist = following && feed.watchlist_id ? await watchlistForStories(feed.watchlist_id) : null;
   const ctx = {
     runId, workspaceId: feed.workspace_id, feed, log, now: nowMs, aliases: await loadAliases(),
-    shared: feed.workspace_id == null || treatAsShared, following: feed.kind === 'following' && !treatAsShared, settings: await getSettings(),
+    shared: feed.workspace_id == null || treatAsShared, following, watchlist, settings: await getSettings(),
   };
 
-  // The window: posts with a card that aren't in any (non-merged) story of this feed yet. A workspace's
-  // following feed only takes posts from what that workspace follows.
+  // The window: posts with a card that aren't in any (non-merged) story of this feed yet. A watchlist's
+  // feed takes every post from its follows that isn't noise (its tags decide what becomes a story); a
+  // following feed from before watchlists takes the workspace's follows, and other feeds newsworthy posts.
+  const worth = watchlist ? 'coalesce(not sc.noise, true)' : 'sc.newsworthy';
+  const scope = watchlist ? watchlistPost('p', '$6::uuid') : `($6::uuid is null or ${followedPost('p', '$6::uuid')})`;
   const { rows: windowRows } = await pool.query(
     `select p.id from posts p join story_cards sc on sc.post_id = p.id
-      where (case when $2::text[] is null then sc.newsworthy and p.published_at >= $3 and p.published_at <= $4
-                  else p.id = any($2::text[]) and ($5 or sc.newsworthy) end)
-        and ($6::uuid is null or ${followedPost('p', '$6::uuid')})
+      where (case when $2::text[] is null then ${worth} and p.published_at >= $3 and p.published_at <= $4
+                  else p.id = any($2::text[]) and ($5 or ${worth}) end)
+        and ${scope}
         and not exists (select 1 from story_posts sp join stories s on s.id = sp.story_id
                          where sp.post_id = p.id and s.feed_id = $1 and s.status <> 'merged')
       order by p.published_at`,
-    [feed.id, postIds, new Date(nowMs - windowDays() * DAY), new Date(nowMs), single, ctx.following ? feed.workspace_id : null],
+    [feed.id, postIds, new Date(nowMs - windowDays() * DAY), new Date(nowMs), single, watchlist ? watchlist.id : following ? feed.workspace_id : null],
   );
   const windowIds = windowRows.map((r) => r.id);
 
   // Posts the grouping model already saw and left out come back every run; only ask again when a post is
-  // new to the window (just understood, or from a follow added or resumed) since the last grouping.
+  // new to the window (just understood, or from a follow added or resumed), or the watchlist's tags or
+  // brands changed, since the last grouping.
+  const groupingKey = watchlist
+    ? createHash('sha1').update(JSON.stringify([watchlist.tags.map((t) => [t.name, t.rule, t.minSources]), watchlist.brands])).digest('hex').slice(0, 16)
+    : null;
   const lastGrouped = new Set(feed.grouped_post_ids ?? []);
-  const unchanged = ctx.following && !postIds && feed.grouped_post_ids != null && windowIds.length > 0 && windowIds.every((id) => lastGrouped.has(id));
+  const unchanged = following && !postIds && feed.grouped_post_ids != null && (feed.grouped_key ?? null) === groupingKey
+    && windowIds.length > 0 && windowIds.every((id) => lastGrouped.has(id));
 
   const { rows: existing } = await pool.query(
     `select ${EXISTING_COLUMNS}
@@ -750,16 +790,31 @@ export async function buildStories({ runId = null, feedId, postIds = null, singl
     // One story from all the given posts: the existing story that holds any of them, else a new one.
     const target = existing.find((s) => s.post_ids.some((id) => postIds?.includes(id))) ?? null;
     if (windowIds.length || target) plans = [{ ref: target?.id ?? `report-${feed.id}`, existing: target, newPostIds: windowIds, title: title ?? target?.headline ?? '', why: title ? `Report: ${title}` : null, confidence: null }];
+  } else if (watchlist && !watchlist.tags.length && windowIds.length) {
+    log(`[stories] watchlist "${watchlist.name}" has no tags, so no new stories are made from its ${windowIds.length} posts`);
   } else if (unchanged) {
     log(`[stories] nothing new since the last grouping; ${windowIds.length} earlier ${windowIds.length === 1 ? 'post stays' : 'posts stay'} out of stories`);
   } else if (windowIds.length) {
     grouped = true;
     const windowWorld = await loadWorld(windowIds);
     const live = existing.filter((s) => LIVE.includes(s.status));
-    log(`[stories] grouping ${windowIds.length} posts with ${live.length} live stories on ${MODELS.strong()}; this call can take several minutes`);
-    const out = await ask(ctx, { step: 'grouping', prompt: '03_story_grouping', input: groupingInput(windowWorld, windowIds, live), label: `feed-${feed.id}` });
-    plans = planFromGrouping(out, windowIds, live).filter((p) => {
-      if (p.existing || enoughForStory(windowWorld, p.newPostIds)) return true;
+    const whose = watchlist ? ` for watchlist "${watchlist.name}" (${watchlist.tags.map((t) => t.name).join(', ')})` : '';
+    log(`[stories] grouping ${windowIds.length} posts with ${live.length} live stories${whose} on ${MODELS.strong()}; this call can take several minutes`);
+    const out = await ask(ctx, {
+      step: 'grouping', prompt: watchlist ? '10_watchlist_grouping' : '03_story_grouping', input: groupingInput(windowWorld, windowIds, live, watchlist), label: `feed-${feed.id}`,
+    });
+    plans = planFromGrouping(out, windowIds, live, watchlist?.tags ?? null).filter((p) => {
+      if (p.existing) return true;
+      if (watchlist) {
+        if (!p.tag) {
+          log(`[stories] "${p.title}" left unassigned: "${p.tagName ?? 'no tag'}" is not one of the watchlist's tags`);
+          return false;
+        }
+        if (enoughForTag(windowWorld, p.newPostIds, p.tag)) return true;
+        log(`[stories] "${p.title}" left unassigned: ${p.tag.name} needs 2 sources or a post with lift 3 or more`);
+        return false;
+      }
+      if (enoughForStory(windowWorld, p.newPostIds)) return true;
       log(`[stories] "${p.title}" left unassigned: fewer than 2 sources and no post with lift 3 or more`);
       return false;
     });
@@ -788,7 +843,7 @@ export async function buildStories({ runId = null, feedId, postIds = null, singl
   // The grouping counts as done only when every story that took new posts was written; otherwise the
   // next run groups those posts again rather than leaving them out for good.
   if (grouped && ctx.following && !postIds && built.every((b, i) => !plans[i]?.newPostIds.length || !b?.error)) {
-    await pool.query('update feeds set grouped_at = $2, grouped_post_ids = $3 where id = $1', [feed.id, startedAt, windowIds]);
+    await pool.query('update feeds set grouped_at = $2, grouped_post_ids = $3, grouped_key = $4 where id = $1', [feed.id, startedAt, windowIds, groupingKey]);
   }
 
   // A report whose posts are already in its story, with nothing new to build, still names that story.

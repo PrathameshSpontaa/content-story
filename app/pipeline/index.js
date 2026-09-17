@@ -1,9 +1,10 @@
 // The production pipeline's entry points, called by the job layer (pipeline/jobs.js): the scheduled
 // run, one workspace's on-demand refresh, and one report. Posts are collected and understood once for
-// everyone; stories are private, built per workspace from only what it follows.
+// everyone; stories are private, built per watchlist from only the follows in it and the tags it wants.
 import { pool } from '../lib/db.js';
 import { aiProvider } from '../lib/env.js';
 import { collectMinHours, getSettings } from '../lib/settings.js';
+import { ensureWatchlists } from '../lib/watchlists.js';
 import { isFake } from './fixtures.js';
 import { buildStories } from './storybuild.js';
 
@@ -23,26 +24,54 @@ export async function sharedFeedId() {
   return (await pool.query('select id from feeds where workspace_id is null limit 1')).rows[0].id;
 }
 
-// A workspace's feed of one kind: 'reports' (stories from reports it ordered) or 'following' (its
-// stories from what it follows). Made on first use; the unique index makes a racing insert a no-op.
-export async function workspaceFeedId(workspaceId, kind = 'reports') {
-  const find = () => pool.query('select id from feeds where workspace_id = $1 and kind = $2', [workspaceId, kind]);
+// A workspace's reports feed: the stories of the reports it ordered. Made on first use; the unique index
+// makes a racing insert a no-op.
+export async function workspaceFeedId(workspaceId) {
+  const find = () => pool.query(`select id from feeds where workspace_id = $1 and kind = 'reports'`, [workspaceId]);
   const { rows } = await find();
   if (rows[0]) return rows[0].id;
   const { rows: ws } = await pool.query('select name from workspaces where id = $1', [workspaceId]);
   await pool.query(
-    `insert into feeds (workspace_id, kind, name) values ($1, $2, $3) on conflict (workspace_id, kind) where workspace_id is not null do nothing`,
-    [workspaceId, kind, `${ws[0]?.name ?? 'Workspace'} ${kind === 'following' ? 'stories' : 'reports'}`],
+    `insert into feeds (workspace_id, kind, name) values ($1, 'reports', $2) on conflict (workspace_id) where kind = 'reports' and workspace_id is not null do nothing`,
+    [workspaceId, `${ws[0]?.name ?? 'Workspace'} reports`],
   );
   return (await find()).rows[0].id;
 }
 
-export const followingFeedId = (workspaceId) => workspaceFeedId(workspaceId, 'following');
+// A watchlist's feed: its stories. Made on first use; the unique index makes a racing insert a no-op.
+export async function watchlistFeedId(watchlistId) {
+  const find = () => pool.query('select id from feeds where watchlist_id = $1', [watchlistId]);
+  const { rows } = await find();
+  if (rows[0]) return rows[0].id;
+  await pool.query(
+    `insert into feeds (workspace_id, kind, watchlist_id, name)
+     select w.workspace_id, 'following', w.id, w.name from watchlists w where w.id = $1
+     on conflict (watchlist_id) where watchlist_id is not null do nothing`,
+    [watchlistId],
+  );
+  return (await find()).rows[0].id;
+}
 
-// Builds one workspace's stories from the posts of what it follows. A workspace that follows nothing
-// has no stories to build.
+// Builds one workspace's stories, one watchlist after another (`feedId` builds just that feed, for tests).
+// One watchlist failing doesn't stop the rest; it throws only when every one failed, or at once when a
+// spend cap or used-up AI quota means the rest would fail too.
 async function buildWorkspaceStories({ runId, workspaceId, feedId = null, log }) {
-  return buildStories({ runId, feedId: feedId ?? (await followingFeedId(workspaceId)), log });
+  if (feedId) return buildStories({ runId, feedId, log });
+  await ensureWatchlists(workspaceId);
+  const { rows: watchlists } = await pool.query('select id, name from watchlists where workspace_id = $1 order by created_at, id', [workspaceId]);
+  const built = [];
+  const failed = [];
+  for (const w of watchlists) {
+    try {
+      built.push(...(await buildStories({ runId, feedId: await watchlistFeedId(w.id), log })));
+    } catch (err) {
+      if (err?.name === 'SpendCapReached' || err?.dailyQuota) throw err;
+      log(`[stories] watchlist ${w.id} (${w.name}) failed: ${String(err.message).slice(0, 300)}`);
+      failed.push(err);
+    }
+  }
+  if (failed.length && failed.length === watchlists.length) throw failed[0];
+  return built;
 }
 
 // How recently a source may have been collected and still be skipped by the scheduled run: most of

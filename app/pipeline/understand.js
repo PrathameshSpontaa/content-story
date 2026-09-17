@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { pool, tx } from '../lib/db.js';
 import { isFake, readFixtureOutput } from './fixtures.js';
 
-export const PROMPT_VERSION = 'prod-2026-09-16';
+export const PROMPT_VERSION = 'prod-2026-09-17';
 const BATCH = { cards: 12, groups: 4 };
 const PARALLEL = 3;
 const PROMPTS = join(dirname(fileURLToPath(import.meta.url)), 'prompts');
@@ -73,8 +73,11 @@ async function inBatches(items, size, fn) {
 function checkCard(card, post) {
   if (!card || card.post_id !== post.post_id) return 'no output for this post';
   const missing = ['about', 'type', 'category'].filter((k) => typeof card[k] !== 'string' || !card[k].trim());
-  if (typeof card.newsworthy !== 'boolean') missing.push('newsworthy');
+  if (typeof card.noise !== 'boolean' && typeof card.newsworthy !== 'boolean') missing.push('noise');
   if (missing.length) return `missing ${missing.join(', ')}`;
+  // Cards answer noise now; older answers (the dry-run fixtures) said newsworthy instead and aren't noise.
+  if (typeof card.noise !== 'boolean') card.noise = false;
+  if (typeof card.newsworthy !== 'boolean') card.newsworthy = null;
   card.entities = Array.isArray(card.entities) ? card.entities.filter((e) => e?.name) : [];
   card.events = Array.isArray(card.events) ? card.events.filter((e) => e?.what) : [];
   card.claims = Array.isArray(card.claims) ? card.claims.filter((c) => c?.text) : [];
@@ -132,11 +135,11 @@ async function ensureEntity(client, cache, name, type) {
 
 async function writeCard(client, card, model, aliasCache) {
   await client.query(
-    `insert into story_cards (post_id, about, type, newsworthy, category, events, model, prompt_version)
-     values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
-     on conflict (post_id) do update set about = excluded.about, type = excluded.type, newsworthy = excluded.newsworthy, category = excluded.category,
-       events = excluded.events, model = excluded.model, prompt_version = excluded.prompt_version, created_at = now()`,
-    [card.post_id, card.about, card.type, card.newsworthy, card.category, JSON.stringify(card.events ?? []), model, PROMPT_VERSION],
+    `insert into story_cards (post_id, about, type, newsworthy, noise, category, events, model, prompt_version)
+     values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
+     on conflict (post_id) do update set about = excluded.about, type = excluded.type, newsworthy = excluded.newsworthy, noise = excluded.noise,
+       category = excluded.category, events = excluded.events, model = excluded.model, prompt_version = excluded.prompt_version, created_at = now()`,
+    [card.post_id, card.about, card.type, card.newsworthy, card.noise, card.category, JSON.stringify(card.events ?? []), model, PROMPT_VERSION],
   );
   await client.query('delete from claims where post_id = $1', [card.post_id]);
   for (const k of card.claims) {

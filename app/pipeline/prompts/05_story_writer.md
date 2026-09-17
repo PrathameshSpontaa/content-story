@@ -35,6 +35,11 @@ on the story page. It adds no facts and computes no numbers.
 
 ## Instructions
 
+`tag`, when present, is the kind of story the reader asked for (for example
+a brand deal, a creator's own news, or a post that broke out). Lead with
+what makes it that kind of story: for a brand deal, name the creator and the
+brand; for a breakout, say what took off.
+
 1. **headline**: max 16 words. Names the main character, says what
    happened, and what is contested if something is. No questions, no
    clickbait, no exclamation marks.

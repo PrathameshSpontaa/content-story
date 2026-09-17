@@ -25,6 +25,10 @@ cross-platform picture without opening the story.
 
 ## Instructions
 
+`tag`, when present, is the kind of story the reader asked for. The
+headline and dek say what makes it that kind: the brand in a brand deal,
+what took off in a breakout, the theme in a trend.
+
 1. **headline**: max 12 words. Names the main character and the news or the
    tension. Present tense. One clause: no colon or semicolon joining two
    headlines. No trailing period, no question, no clickbait, no hype words

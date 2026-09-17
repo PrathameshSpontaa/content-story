@@ -1,11 +1,13 @@
-// A workspace's watchlist: creators (with a handle on each platform), brands or keywords, and
+// What a workspace follows: creators (with a handle on each platform), brands or keywords, and
 // Reddit communities. Creators and handles are shared rows, so every workspace tracking the same
-// person points at one creator, and that creator is collected once.
+// person points at one creator, and that creator is collected once. Every follow sits in one or more
+// of the workspace's watchlists (lib/watchlists.js); a new follow goes into the ones it was added from.
 import { getPlanState } from './accounts.js';
 import { pool, tx } from './db.js';
 import { PLATFORM_NAMES } from './format.js';
 import { PLATFORMS } from './pricing.js';
 import { CREATOR_PLATFORMS, WatchlistError, detectPlatform, parseCommunity, parseHandle } from './profiles.js';
+import { attachTarget, ensureWatchlists } from './watchlists.js';
 
 export { CREATOR_PLATFORMS, WatchlistError, detectPlatform, parseCommunity, parseHandle } from './profiles.js';
 
@@ -119,7 +121,8 @@ export async function slotUsage(workspaceId, kind) {
 export async function getTarget(workspaceId, targetId) {
   if (!UUID.test(String(targetId))) return null;
   const { rows } = await pool.query(
-    `select t.id, t.kind, t.creator_id, t.query, t.active, coalesce(c.name, t.query) as name
+    `select t.id, t.kind, t.creator_id, t.query, t.active, coalesce(c.name, t.query) as name,
+            array(select wt.watchlist_id from watchlist_targets wt where wt.target_id = t.id) as watchlist_ids
        from tracking_targets t left join creators c on c.id = t.creator_id
       where t.id = $1 and t.workspace_id = $2`,
     [targetId, workspaceId],
@@ -142,14 +145,22 @@ const FOLLOW_QUERY = `
   on conflict (workspace_id, kind, lower(query)) where kind <> 'creator'
   do update set active = true, paused_reason = null where not tracking_targets.active`;
 
-export async function followCreator(workspaceId, creatorId) {
+const TARGET_OF_CREATOR = `select id, active from tracking_targets where workspace_id = $1 and kind = 'creator' and creator_id = $2`;
+const TARGET_OF_QUERY = `select id, active from tracking_targets where workspace_id = $1 and kind = $2 and lower(query) = lower($3)`;
+
+// Follows a creator into the given watchlists (the first watchlist when none is given). Adding someone
+// already followed to another watchlist doesn't take a slot. True when anything changed.
+export async function followCreator(workspaceId, creatorId, { watchlistIds = [] } = {}) {
   if (!UUID.test(String(creatorId))) throw new WatchlistError('Choose a creator from the list.');
   const plan = await getPlanState(workspaceId);
   return tx(async (client) => {
     await client.query('select 1 from workspaces where id = $1 for update', [workspaceId]);
-    await assertRoom(client, workspaceId, 'creator', plan);
+    const before = (await client.query(TARGET_OF_CREATOR, [workspaceId, creatorId])).rows[0];
+    if (!before?.active) await assertRoom(client, workspaceId, 'creator', plan);
     const { rowCount } = await client.query(FOLLOW_CREATOR, [workspaceId, creatorId]);
-    return rowCount === 1;
+    const target = before ?? (await client.query(TARGET_OF_CREATOR, [workspaceId, creatorId])).rows[0];
+    const joined = target ? await attachTarget(client, workspaceId, target.id, watchlistIds) : 0;
+    return rowCount === 1 || joined > 0;
   });
 }
 
@@ -240,7 +251,7 @@ export async function lookupProfile(workspaceId, raw, platform = null) {
 // A creator we don't cover yet, with a profile on each platform they post on. Refuses profiles
 // that already belong to someone, so the same person is never collected twice.
 // `checked` says the channel finder already looked for their other channels.
-export async function createCreator(workspaceId, { name, profiles, follow = true, checked = false }) {
+export async function createCreator(workspaceId, { name, profiles, follow = true, checked = false, watchlistIds = [] }) {
   const cleanName = cleanKeyword(name).slice(0, 80);
   if (cleanName.length < 2) throw new WatchlistError('Add the creator’s name.');
 
@@ -270,7 +281,11 @@ export async function createCreator(workspaceId, { name, profiles, follow = true
     for (const p of parsed) {
       await client.query('insert into creator_handles (creator_id, platform, handle, url) values ($1, $2, $3, $4)', [id, p.platform, p.handle, p.url]);
     }
-    if (follow) await client.query(FOLLOW_CREATOR, [workspaceId, id]);
+    if (follow) {
+      await client.query(FOLLOW_CREATOR, [workspaceId, id]);
+      const target = (await client.query(TARGET_OF_CREATOR, [workspaceId, id])).rows[0];
+      if (target) await attachTarget(client, workspaceId, target.id, watchlistIds);
+    }
     return { id };
   });
 
@@ -320,7 +335,8 @@ export async function addCreatorChannels(workspaceId, creatorId, profiles) {
 
 // ─── Onboarding and lists ──────────────────────────────────────────────────
 
-// First-run picks, saved in one go. Picks past the plan's limits are left out.
+// First-run picks, saved in one go. Picks past the plan's limits are left out. They all go into the
+// first watchlist, made here with the tags for the use case picked.
 export async function completeOnboarding(workspaceId, { useCase, creatorIds, communities, keywords }) {
   const plan = await getPlanState(workspaceId);
   const ids = [...new Set((creatorIds ?? []).map(String).filter((id) => UUID.test(id)))];
@@ -373,6 +389,7 @@ export async function completeOnboarding(workspaceId, { useCase, creatorIds, com
       }
     }
     await client.query('update workspaces set onboarded_at = coalesce(onboarded_at, now()), use_case = coalesce($2, use_case) where id = $1', [workspaceId, use]);
+    await ensureWatchlists(workspaceId, client);
     return added;
   });
 }
@@ -380,7 +397,8 @@ export async function completeOnboarding(workspaceId, { useCase, creatorIds, com
 // The short list for the sidebar and the stories filter.
 export async function listFollowing(workspaceId) {
   const { rows } = await pool.query(
-    `select t.id, t.kind, t.creator_id, coalesce(c.name, t.query) as name, ${creatorPhoto('t.creator_id')} as photo
+    `select t.id, t.kind, t.creator_id, coalesce(c.name, t.query) as name, ${creatorPhoto('t.creator_id')} as photo,
+            array(select wt.watchlist_id from watchlist_targets wt where wt.target_id = t.id) as watchlist_ids
        from tracking_targets t left join creators c on c.id = t.creator_id
       where t.workspace_id = $1 and t.active
       order by case t.kind when 'creator' then 0 when 'community' then 1 else 2 end, lower(coalesce(c.name, t.query))`,
@@ -389,7 +407,9 @@ export async function listFollowing(workspaceId) {
   return rows;
 }
 
-export async function addTopic(workspaceId, { kind, query, platforms }) {
+// Follows a subreddit or a brand into the given watchlists (the first when none is given). Following one
+// already followed only adds it to another watchlist, without taking a slot.
+export async function addTopic(workspaceId, { kind, query, platforms, watchlistIds = [] }) {
   let cleanQuery;
   let cleanPlatforms;
   if (kind === 'community') {
@@ -407,9 +427,12 @@ export async function addTopic(workspaceId, { kind, query, platforms }) {
 
   return tx(async (client) => {
     await client.query('select 1 from workspaces where id = $1 for update', [workspaceId]);
-    await assertRoom(client, workspaceId, kind, plan);
-    const inserted = await client.query(FOLLOW_QUERY, [workspaceId, kind, cleanQuery, cleanPlatforms]);
-    if (!inserted.rowCount) throw new WatchlistError(`You already follow ${cleanQuery}.`);
+    const before = (await client.query(TARGET_OF_QUERY, [workspaceId, kind, cleanQuery])).rows[0];
+    if (!before?.active) await assertRoom(client, workspaceId, kind, plan);
+    await client.query(FOLLOW_QUERY, [workspaceId, kind, cleanQuery, cleanPlatforms]);
+    const target = before ?? (await client.query(TARGET_OF_QUERY, [workspaceId, kind, cleanQuery])).rows[0];
+    const joined = await attachTarget(client, workspaceId, target.id, watchlistIds);
+    if (before?.active && !joined) throw new WatchlistError(`You already follow ${cleanQuery}.`);
     return { query: cleanQuery };
   });
 }

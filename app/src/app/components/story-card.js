@@ -29,6 +29,7 @@ export default function StoryCard({ story, variant = 'full', saveAction = null }
     <article className={`scard ${variant}`}>
       <div className="scard-head">
         <p className="kicker">
+          {story.tag ? <span className="tagchip">{story.tag}</span> : null}
           <span className="mc">{story.main_character}</span>
           <span aria-hidden="true">·</span>
           <time dateTime={story.last_post_at ? new Date(story.last_post_at).toISOString() : undefined} title={`Posts from ${dayRange(story.first_post_at, story.last_post_at)}`}>

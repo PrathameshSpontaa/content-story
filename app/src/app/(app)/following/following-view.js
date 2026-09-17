@@ -316,7 +316,7 @@ export default function FollowingView({ sources, keywords, totalStories, plan, r
   function unfollow(item) {
     run(item.key, () => unfollowAction(item.follow.id), (res) => {
       if (res.error) return say(res.error);
-      say(`Unfollowed ${item.name}.`, () => follow(followRef(item)));
+      say(`Unfollowed ${item.name}.`, () => follow({ ...followRef(item), watchlistIds: res.undo?.watchlistIds ?? [] }));
     });
   }
 

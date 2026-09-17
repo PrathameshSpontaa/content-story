@@ -5,25 +5,26 @@ import { getBalance } from '../../../lib/credits.js';
 import { fmtNum } from '../../../lib/format.js';
 import { clerkConfigured, devPreviewEmail, requireSession } from '../../../lib/session.js';
 import { listFollowing } from '../../../lib/watchlist.js';
+import { listWatchlistNames } from '../../../lib/watchlists.js';
 import Brand from '../components/brand-mark.js';
-import Face from '../components/face.js';
 import NavLinks from '../components/nav-links.js';
 import SiteFooter from '../components/site-footer.js';
 
 export const dynamic = 'force-dynamic';
 
-const SIDEBAR_FOLLOWS = 8;
+const SIDEBAR_WATCHLISTS = 8;
 
 export default async function AppLayout({ children }) {
   const session = await requireSession();
   const workspaceId = session.workspace.id;
-  const [credits, plan, following] = await Promise.all([getBalance(workspaceId), getPlanState(workspaceId), listFollowing(workspaceId)]);
+  const [credits, plan, following, watchlists] = await Promise.all([getBalance(workspaceId), getPlanState(workspaceId), listFollowing(workspaceId), listWatchlistNames(workspaceId)]);
   const low = credits.available < plan.allowance * 0.2;
   const previewing = devPreviewEmail() === session.user.email;
-  const shown = following.slice(0, SIDEBAR_FOLLOWS);
+  const shown = watchlists.slice(0, SIDEBAR_WATCHLISTS);
 
   const primary = [
     { href: '/stories', label: 'Stories', icon: 'stories' },
+    { href: '/watchlists', label: 'Watchlists', icon: 'watchlists', count: watchlists.length || null },
     { href: '/following', label: 'Following', icon: 'following', count: following.length || null },
     { href: '/reports', label: 'Reports', icon: 'reports' },
   ];
@@ -56,23 +57,23 @@ export default async function AppLayout({ children }) {
         <NavLinks links={primary} label="Main" />
 
         <div className="side-follows">
-          <p className="side-label">Following</p>
+          <p className="side-label">Watchlists</p>
           {shown.length ? (
             <ul>
-              {shown.map((t) => (
-                <li key={t.id}>
-                  <Link href={`/stories?follow=${t.id}`} title={`Stories involving ${t.name}`}>
-                    <Face name={t.name} kind={t.kind} photo={t.photo} size="xs" />
-                    <span>{t.name}</span>
+              {shown.map((w) => (
+                <li key={w.id}>
+                  <Link href={`/stories?w=${w.id}`} title={`${w.name}: ${w.follows} following`}>
+                    <span className="side-dot" aria-hidden="true" />
+                    <span>{w.name}</span>
                   </Link>
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="side-empty">Follow creators and brands to build your stories.</p>
+            <p className="side-empty">Group who you follow by client, campaign or interest.</p>
           )}
-          <Link href="/following" className="side-more">
-            {following.length > shown.length ? `See all ${following.length}` : shown.length ? 'Manage' : 'Choose who to follow'}
+          <Link href="/watchlists" className="side-more">
+            {watchlists.length > shown.length ? `See all ${watchlists.length}` : shown.length ? 'Manage' : 'Set up watchlists'}
           </Link>
         </div>
 

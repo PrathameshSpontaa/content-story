@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { collectAfterFollow } from '../../../lib/refresh.js';
 import { requireSession } from '../../../lib/session.js';
 import { ExistingCreatorError, LimitError, WatchlistError, addCreatorChannels, addTopic, createCreator, followCreator, getCreatorSummary, slotUsage } from '../../../lib/watchlist.js';
+import { chosenWatchlistIds } from '../watchlist-choice.js';
 
 const OOPS = 'Something went wrong on our side. Try again in a minute.';
 
@@ -30,7 +31,8 @@ async function followed(session, kind) {
   return { collecting, lastSlot };
 }
 
-// follow: false adds the creator without following them (onboarding saves picks at the end).
+// follow: false adds the creator without following them (onboarding saves picks at the end). Follows go
+// into the watchlist picked on the Following page.
 export async function createCreatorAction(input) {
   const session = await requireSession();
   const follow = input?.follow !== false;
@@ -38,7 +40,9 @@ export async function createCreatorAction(input) {
     ? input.profiles.slice(0, 10).map((p) => ({ platform: String(p?.platform ?? ''), input: String(p?.input ?? '') }))
     : [];
   try {
-    const creator = await createCreator(session.workspace.id, { name: String(input?.name ?? ''), profiles, follow, checked: input?.checked === true });
+    const creator = await createCreator(session.workspace.id, {
+      name: String(input?.name ?? ''), profiles, follow, checked: input?.checked === true, watchlistIds: follow ? await chosenWatchlistIds() : [],
+    });
     if (!follow) return { creator };
     refresh();
     return { creator, ...(await followed(session, 'creator')) };
@@ -65,7 +69,7 @@ export async function followCreatorByIdAction(creatorId) {
   const session = await requireSession();
   const id = String(creatorId ?? '');
   try {
-    await followCreator(session.workspace.id, id);
+    await followCreator(session.workspace.id, id, { watchlistIds: await chosenWatchlistIds() });
   } catch (err) {
     return failure(err);
   }
@@ -79,7 +83,7 @@ export async function followByNameAction(kind, query) {
   const session = await requireSession();
   const topicKind = kind === 'community' ? 'community' : 'keyword';
   try {
-    const { query: name } = await addTopic(session.workspace.id, { kind: topicKind, query: String(query ?? '') });
+    const { query: name } = await addTopic(session.workspace.id, { kind: topicKind, query: String(query ?? ''), watchlistIds: await chosenWatchlistIds() });
     refresh();
     return { name, ...(await followed(session, topicKind)) };
   } catch (err) {

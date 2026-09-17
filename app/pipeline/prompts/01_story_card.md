@@ -31,10 +31,12 @@ outside knowledge only to write well-known names consistently.
    "The creator talks about Inkwell".
 2. **type**: `news_reaction`, `announcement`, `opinion`, `tutorial`,
    `drama`, `promo`, `personal` or `other`.
-3. **newsworthy**: `true` if the post is about a specific event, launch,
-   change, controversy or claim that other people could also be discussing
-   this week. `false` for evergreen tips, motivation, personal updates,
-   ads and sponsored content.
+3. **noise**: `true` only when the post gives nothing to write about: a
+   bare title, link or image with no subject you can tell, a greeting, or a
+   joke or chit-chat that isn't about anything. Everything with a subject is
+   `false`, including ads and sponsored posts, promos, tips, tutorials,
+   opinions and personal updates: the people reading these stories track
+   brand deals, creators' own news and what their audiences react to.
 4. **entities**: people, organizations, products and events the post names
    or clearly refers to. Canonical name ("OpenAI", not "openai's new
    thing"), `type` (`person`, `org`, `product`, `event`, `place`) and
@@ -66,7 +68,7 @@ Return JSON only, matching the schema.
   "post_id": "x_1834",
   "about": "",
   "type": "opinion",
-  "newsworthy": true,
+  "noise": false,
   "category": "AI & tech",
   "entities": [{ "name": "", "type": "org", "salience": 0.9 }],
   "claims": [
